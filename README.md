@@ -9,8 +9,7 @@ result at a time. It is inspired by ideas in [Splash](https://github.com/incoai/
 It exists to be fast at two things: reading long prompts (prefill) and writing replies
 (decode). This page says how to run it, and then why it is as fast as it is.
 
-If it is useful to you, you can put something in
-[Andy's Tea Fund](https://buymeacoffee.com/andysteafund).
+[![Buy me a tea](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20tea&emoji=%F0%9F%8D%B5&slug=andysteafund&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/andysteafund)
 
 ## What it does on an M5 Pro
 
