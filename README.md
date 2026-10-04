@@ -28,6 +28,7 @@ How it is made is in [pages of its own](#how-it-is-made).
 ## Contents
 
 - [What it does on an M5 Pro](#what-it-does-on-an-m5-pro): the measured rates
+- [Batches of agents](#batches-of-agents): several conversations answered in the same step
 - [Getting it running](#getting-it-running): from a Mac with nothing installed to a served model
 - [The server](#the-server): the API and the dashboard
 - [Models](#models): the four there are
@@ -71,6 +72,32 @@ with 13.9 tokens a step and 99% of drafts accepted.
 These are one machine's figures. How they were taken, and what else was tried, is in
 [`audit/SPEED-PLAN-RESULTS.md`](audit/SPEED-PLAN-RESULTS.md); the harness is
 `tools/bench/engine-report`.
+
+## Batches of agents
+
+Splosh is built for several agents working at once. Requests that arrive together are not
+queued behind each other: each step, rows from every live conversation are packed into one
+pass over the weights, a block of drafted tokens to check for each one that is writing and
+prompt rows for those still reading. The weights are read once however many share the step,
+so a step for eight takes about 210 ms where a step for one takes 80, and eight agents
+together get about three times what one gets alone.
+
+![The dashboard during a test run of eight agents: decode at 174 tokens/s between them, a step of 64 rows taking 224 ms, 27.70 GiB in use, and eight sessions of 36K to 42K tokens of context each, all in decode, with each one's rate, tokens per step and share of drafts accepted.](docs/figures/dashboard-batch.png)
+
+The picture is a test run of eight agents on `mq4`, each with about 40K tokens of context: 174
+tokens/s between them, in steps of 64 rows.
+
+- **Nothing to set up.** Send the requests at the same time. Up to `slots` conversations (8)
+  hold state at once, and `concurrency` limits how many are worked on together.
+- **A shared system prompt is read once.** The state at the end of it is kept, so each new
+  agent with the same instructions and tools starts from there, and each later turn evaluates
+  only what was added.
+- **Reading and writing share a step.** A prompt that is waiting gets a full-width step with
+  the writers riding in it; `decodeWeight` changes the balance.
+
+How the step is packed is under
+[Many sessions at once](docs/why-it-is-fast.md#many-sessions-at-once); the settings are in
+[The server](docs/server.md#settings).
 
 ## Getting it running
 
