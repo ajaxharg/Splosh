@@ -17,7 +17,7 @@ import SploshModel
 // comparing an fp32's two BF16 neighbours.
 //
 // Three files are converted: a synthetic one with every format and every kind of head order, two
-// blocks of the real UD-Q5_K_M when the Hugging Face cache has it, and, when .build/gguf has the
+// blocks of the real UD-Q5_K_M when the Hugging Face cache has it, and, when models/gguf has the
 // whole of it converted, that artifact is checked against the names and shapes the model loads
 // and sampled against the source, a tile a weight. A fourth, small, is mapped as the loader
 // maps an artifact and read by the GGUF kernels.
@@ -353,7 +353,7 @@ private func inScratchDirectory<T>(_ body: (URL) throws -> T) throws -> T {
 private let cache = NSHomeDirectory() + "/.cache/huggingface/hub/models--unsloth--Qwen3.8-27B-GGUF/snapshots/4ca720788d1e01f1bff70c033e0d0028fd02e502/"
 /// The real model, when this machine has it, and the whole of it converted, when that was done.
 private let realGgufPath = cache + "Qwen3.8-27B-UD-Q5_K_M.gguf"
-private let realArtifactPath = FileManager.default.currentDirectoryPath + "/.build/gguf/ud-q5_k_m.splw"
+private let realArtifactPath = FileManager.default.currentDirectoryPath + "/models/gguf/ud-q5_k_m.splw"
 private let tokenizerPath = FileManager.default.currentDirectoryPath + "/inputs/tokenizer/tokenizer.json"
 
 @Suite("GgufConvertTests", .serialized)
@@ -734,7 +734,7 @@ struct GgufConvertTests {
 
     @Test("The whole UD-Q5_K_M as converted has every tensor the model loads, and the source's values",
           .enabled(if: FileManager.default.fileExists(atPath: realArtifactPath) && FileManager.default.fileExists(atPath: realGgufPath),
-                   "needs .build/gguf/ud-q5_k_m.splw, converted from the Hugging Face cache copy of Qwen3.8-27B-UD-Q5_K_M.gguf"))
+                   "needs models/gguf/ud-q5_k_m.splw, converted from the Hugging Face cache copy of Qwen3.8-27B-UD-Q5_K_M.gguf"))
     func realArtifact() throws {
         // Only the header and the sampled tiles are read: the artifact is not mapped, and
         // ModelWeights is not opened on it.

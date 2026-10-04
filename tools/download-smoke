@@ -1,0 +1,529 @@
+#!/usr/bin/env python3
+"""Download and install models, from a stand-in for Hugging Face, and check what the user sees.
+
+`splosh download` and the server's first launch are the real code: the downloader with its
+resumed parts and SHA-256 checks, the install written down for the pages, the server that starts
+without a model, offers the downloads and starts its engine when one is installed. What stands
+in is the far end and the model: a small HTTP server here plays Hugging Face (HF_ENDPOINT), a
+library of small files replaces the built-in one (SPLOSH_LIBRARY), a "conversion" copies its
+input (SPLOSH_ECHO_CONVERT), and the server is `splosh serve --echo`. Nothing is fetched from
+the network and no model is loaded. This checks that:
+
+  - `splosh download` fetches the tokenizer, the weights and the draft model, converts, and
+    registers the model in splosh.toml; an MLX pack goes through both of its conversions;
+  - a download that is stopped keeps its part and is carried on from with a Range request;
+    one whose connection drops is carried on from within the same run;
+  - a file that does not match its pinned SHA-256 is refused and removed;
+  - files put in place by hand, and files in the Hugging Face cache, are used and not fetched;
+  - one install runs at a time;
+  - a server with no model installed starts, serves the page that offers the downloads, lists
+    what there is, and answers a chat with 503 `model_not_installed`;
+  - an install asked of it (as its pages ask) runs, is shown step by step, and ends with the
+    engine started on the model and answering;
+  - Enter in the server's terminal installs the default model;
+  - a model installed while another is loaded can then be loaded by naming it;
+  - an install can be stopped from the page, and ends when the server is stopped;
+  - an install is refused from another origin.
+
+usage: tools/download-smoke [path to splosh]     (default .build/release/splosh)
+"""
+import fcntl, hashlib, http.client, http.server, json, os, pty, shutil, signal, socket, subprocess, sys, tempfile, termios, threading, time
+
+BINARY = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".build/release/splosh")
+failures = []
+
+
+def check(ok, what):
+    print(("ok    " if ok else "FAIL  ") + what)
+    if not ok:
+        failures.append(what)
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def content(name, size):
+    """The bytes of a made-up file: the same for a name every time."""
+    seed = hashlib.sha256(name.encode()).digest()
+    return (seed * (size // len(seed) + 1))[:size]
+
+
+class Hub:
+    """A stand-in for Hugging Face: /<org>/<repo>/resolve/<revision>/<file>, with Range."""
+
+    def __init__(self):
+        self.files = {}             # path -> bytes
+        self.requests = []          # (path, the Range header)
+        self.rate = None            # bytes a second, or as fast as they go
+        self.drop_after = {}        # path -> bytes after which the next answer is cut short, once
+        self.port = free_port()
+        hub = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                hub.requests.append((self.path, self.headers.get("Range")))
+                data = hub.files.get(self.path)
+                if data is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                start = 0
+                asked = self.headers.get("Range")
+                if asked:
+                    start = int(asked.split("=")[1].split("-")[0])
+                    self.send_response(206)
+                    self.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+                else:
+                    self.send_response(200)
+                body = data[start:]
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                cut = hub.drop_after.pop(self.path, None)
+                sent = 0
+                try:
+                    while sent < len(body):
+                        if cut is not None and sent >= cut:
+                            self.connection.shutdown(socket.SHUT_RDWR)
+                            return
+                        block = body[sent:sent + 65536]
+                        self.wfile.write(block)
+                        self.wfile.flush()
+                        sent += len(block)
+                        if hub.rate:
+                            time.sleep(len(block) / hub.rate)
+                except OSError:
+                    pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+        self.server.daemon_threads = True
+        self.server.handle_error = lambda *_: None                  # a client that goes away mid-answer is part of the test
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def add(self, repo, revision, name, size):
+        data = content(repo + "/" + name, size)
+        self.files[f"/{repo}/resolve/{revision}/{name}"] = data
+        return {"name": name, "bytes": size, "sha256": hashlib.sha256(data).hexdigest()}
+
+    def asked(self, name):
+        return [r for r in self.requests if r[0].endswith("/" + name)]
+
+
+def library(hub):
+    """A library of small files, each served by `hub`."""
+    revision = "0123456789abcdef"
+    token = hub.add("test/tok", revision, "tokenizer.json", 40_000)
+
+    def gguf(id, size):
+        return {"id": id, "title": "Test " + id, "summary": "A file of made-up bytes.", "kind": "gguf",
+                "source": {"repo": "test/gguf", "revision": revision, "directory": "inputs/gguf",
+                           "files": [hub.add("test/gguf", revision, id + ".gguf", size)]},
+                "artifact": f"models/{id}.splw", "artifactBytes": size, "bitsPerWeight": 4.5, "memoryGiB": 0.1}
+
+    return {
+        "defaultModel": "tiny",
+        "tokenizer": {"repo": "test/tok", "revision": revision, "directory": "inputs/tokenizer",
+                      "files": [token, hub.add("test/tok", revision, "tokenizer_config.json", 1_000), hub.add("test/tok", revision, "chat_template.jinja", 2_000)]},
+        "draft": {"repo": "test/draft", "revision": revision, "directory": "inputs/draft", "files": [hub.add("test/draft", revision, "model.safetensors", 300_000)]},
+        "models": [
+            gguf("tiny", 2_000_000), gguf("other", 3_000_000), gguf("big", 24_000_000),
+            {"id": "pack", "title": "Test pack", "summary": "Several files, converted twice.", "kind": "mlx",
+             "source": {"repo": "test/pack", "revision": revision, "directory": "inputs/pack",
+                        "files": [hub.add("test/pack", revision, "config.json", 500),
+                                  # The same file as the tokenizer's, as in the MLX pack.
+                                  {**token},
+                                  hub.add("test/pack", revision, "model-00001-of-00002.safetensors", 1_500_000),
+                                  hub.add("test/pack", revision, "model-00002-of-00002.safetensors", 1_000_000)]},
+             "artifact": "models/pack/weights.tiled.splw", "artifactBytes": 1_500_000, "bitsPerWeight": 4.5, "memoryGiB": 0.1},
+        ],
+    }
+
+
+class Place:
+    """A directory to install into: a library, a stand-in hub, an empty Hugging Face cache."""
+
+    def __init__(self, root, name, config=""):
+        os.makedirs(os.path.join(root, name))
+        self.directory = os.path.realpath(os.path.join(root, name))             # as a process started in it names it
+        self.hub = Hub()
+        self.library = library(self.hub)
+        # The pack takes its tokenizer.json from the tokenizer's repository in the test of copies.
+        self.hub.files["/test/pack/resolve/0123456789abcdef/tokenizer.json"] = self.hub.files["/test/tok/resolve/0123456789abcdef/tokenizer.json"]
+        path = os.path.join(self.directory, "library.json")
+        with open(path, "w") as file:
+            json.dump(self.library, file)
+        self.cache = os.path.join(self.directory, "hf-cache")
+        os.makedirs(self.cache)
+        with open(self.path("splosh.toml"), "w") as file:
+            file.write(config)
+        self.environment = dict(os.environ, SPLOSH_LIBRARY=path, HF_ENDPOINT=f"http://127.0.0.1:{self.hub.port}", HF_HUB_CACHE=self.cache,
+                                SPLOSH_ECHO_CONVERT="150", SPLOSH_ECHO_INTERVAL_MS="20", SPLOSH_ECHO_LOAD_MS="100")
+        for name in ("SPLOSH_MODEL", "SPLOSH_DOWNLOAD_PARENT", "HF_HOME"):
+            self.environment.pop(name, None)
+
+    def path(self, *parts):
+        return os.path.join(self.directory, *parts)
+
+    def model(self, id):
+        return next(m for m in self.library["models"] if m["id"] == id)
+
+    def download(self, *arguments, timeout=120):
+        return subprocess.run([BINARY, "download", *arguments], cwd=self.directory, env=self.environment, capture_output=True, text=True, timeout=timeout)
+
+    def start_download(self, *arguments):
+        return subprocess.Popen([BINARY, "download", *arguments], cwd=self.directory, env=self.environment, stderr=subprocess.PIPE, text=True)
+
+    def status(self, id):
+        try:
+            with open(self.path("models/.downloads", id + ".json")) as file:
+                return json.load(file)
+        except (OSError, ValueError):
+            return None
+
+    def config(self):
+        with open(self.path("splosh.toml")) as file:
+            return file.read()
+
+    def same(self, relative, hub_path):
+        try:
+            with open(self.path(relative), "rb") as file:
+                return file.read() == self.hub.files[hub_path]
+        except OSError:
+            return False
+
+
+def request(port, method, path, body=None, headers=None, timeout=60):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    headers = dict(headers or {})
+    if body is not None:
+        headers.setdefault("Content-Type", "application/json")
+        body = json.dumps(body)
+    connection.request(method, path, body, headers)
+    response = connection.getresponse()
+    raw = response.read()
+    connection.close()
+    try:
+        return response.status, json.loads(raw)
+    except ValueError:
+        return response.status, raw.decode(errors="replace")
+
+
+def chat(port, text, model="any"):
+    """One chat request: its status, and the words said back or the error code of a refusal."""
+    status, body = request(port, "POST", "/v1/chat/completions", {"model": model, "stream": True, "messages": [{"role": "user", "content": text}]})
+    if status != 200:
+        return status, body["error"]["code"] if isinstance(body, dict) else body
+    said = ""
+    for line in body.splitlines():
+        if line.startswith("data: ") and not line.startswith("data: [DONE]"):
+            for choice in json.loads(line[6:]).get("choices", []):
+                said += choice.get("delta", {}).get("content") or ""
+    return status, said.split()
+
+
+class Server:
+    """A `splosh serve --echo` in a place, for as long as the `with` lasts. `terminal` gives it one to read from."""
+
+    def __init__(self, place, terminal=False):
+        self.place, self.terminal = place, terminal
+        self.port = free_port()
+        self.log = []
+
+    def __enter__(self):
+        stdin, session = subprocess.DEVNULL, None
+        if self.terminal:
+            self.keyboard, stdin = pty.openpty()
+
+            def session():
+                # As started from a shell in that terminal: its foreground job.
+                os.setsid()
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        self.process = subprocess.Popen([BINARY, "serve", "--echo", "--port", str(self.port)], cwd=self.place.directory, env=self.place.environment,
+                                        stdin=stdin, stderr=subprocess.PIPE, text=True, preexec_fn=session)
+        if self.terminal:
+            os.close(stdin)
+        threading.Thread(target=lambda: self.log.extend(iter(self.process.stderr.readline, "")), daemon=True).start()
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            try:
+                if request(self.port, "GET", "/health", timeout=2)[0] == 200:
+                    break
+            except OSError:
+                time.sleep(0.1)
+        return self
+
+    def __exit__(self, *_):
+        if self.process.poll() is None:
+            self.process.send_signal(signal.SIGINT)
+            try:
+                self.process.wait(20)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        if self.terminal:
+            os.close(self.keyboard)
+        if failures:
+            print("\nserver output:\n" + "".join(self.log))
+
+    def said(self, text):
+        return any(text in line for line in self.log)
+
+    def downloads(self):
+        return request(self.port, "GET", "/v1/downloads")[1]
+
+    def model(self, id):
+        return next(m for m in self.downloads()["models"] if m["id"] == id)
+
+    def wait(self, condition, seconds=30):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            try:
+                if condition():
+                    return True
+            except (OSError, KeyError, TypeError, StopIteration):
+                pass
+            time.sleep(0.1)
+        return False
+
+
+def wait_for(condition, seconds=20):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def command(root):
+    print("\nsplosh download")
+    place = Place(root, "command")
+    listed = place.download("--list")
+    check(listed.returncode == 0 and all(m["id"] in listed.stdout for m in place.library["models"]) and place.path("inputs/gguf/tiny.gguf") in listed.stdout,
+          "--list names every model and where its own files go")
+    check(place.download("nothing").returncode == 2, "a model there is not is a usage error")
+
+    done = place.download()
+    said = done.stderr
+    check(done.returncode == 0, f"with no model named, the default is installed (status {done.returncode})")
+    check(place.same("models/tiny.splw", "/test/gguf/resolve/0123456789abcdef/tiny.gguf"), "its artifact is where the library puts it")
+    check(place.same("inputs/tokenizer/tokenizer.json", "/test/tok/resolve/0123456789abcdef/tokenizer.json")
+          and os.path.exists(place.path("inputs/tokenizer/chat_template.jinja")), "the tokenizer and the chat template are fetched")
+    check(place.same("inputs/draft/model.safetensors", "/test/draft/resolve/0123456789abcdef/model.safetensors"), "the draft model is fetched")
+    check('model.tiny = "models/tiny.splw"' in place.config(), "the model is registered in splosh.toml")
+    check(all(f"[{n}/5]" in said for n in range(1, 6)) and "Tokenizer" in said and "Convert" in said and "SHA-256" in said and "is installed" in said,
+          "the terminal is told each step, what it is for, and the end")
+    check("tiny is installed: /" in said and "/command/models/tiny.splw (2.0 MB)" in said and "inputs/gguf/tiny.gguf (2.0 MB), can be deleted" in said,
+          "and where the converted model is, and that what it was converted from can go")
+    status = place.status("tiny")
+    check(status is not None and status["state"] == "done" and [s["state"] for s in status["steps"]] == ["done"] * 5, "the install is written down as done, every step")
+    check(not any(name.endswith(".part") for name in os.listdir(place.path("inputs/gguf"))), "no part is left behind")
+
+    asked = len(place.hub.requests)
+    again = place.download("tiny")
+    check(again.returncode == 0 and len(place.hub.requests) == asked and "already" in again.stderr, "installed again, nothing is fetched")
+
+    # An MLX pack: several files, one of them the tokenizer's; converted, then tiled.
+    pack = place.download("pack")
+    check(pack.returncode == 0 and os.path.exists(place.path("models/pack/weights.tiled.splw")) and not os.path.exists(place.path("models/pack/weights.splw")),
+          "a pack is converted and tiled, and the artifact between the two is removed")
+    check(not place.hub.asked("tokenizer.json")[1:] and os.path.exists(place.path("inputs/pack/tokenizer.json")), "a file the tokenizer already has is copied, not fetched again")
+    check("model.pack" in place.config() and 'model = ' not in place.config(), "it is registered, and the starting model is left as it was")
+
+    # Files put in place by hand; and in the Hugging Face cache.
+    os.makedirs(place.path("inputs/gguf"), exist_ok=True)
+    with open(place.path("inputs/gguf/other.gguf"), "wb") as file:
+        file.write(place.hub.files["/test/gguf/resolve/0123456789abcdef/other.gguf"])
+    own = place.download("other")
+    check(own.returncode == 0 and not place.hub.asked("other.gguf") and "already there" in own.stderr and os.path.exists(place.path("models/other.splw")),
+          "a file put in place by hand is checked, used and not fetched")
+    # The cache as `hf download` lays it out: a snapshot's files are links into its blobs.
+    repository = os.path.join(place.cache, "models--test--gguf")
+    os.makedirs(os.path.join(repository, "blobs"))
+    os.makedirs(os.path.join(repository, "snapshots", "abc"))
+    with open(os.path.join(repository, "blobs", "0f0f"), "wb") as file:
+        file.write(place.hub.files["/test/gguf/resolve/0123456789abcdef/big.gguf"])
+    os.symlink("../../blobs/0f0f", os.path.join(repository, "snapshots", "abc", "big.gguf"))
+    cached = place.download("big")
+    check(cached.returncode == 0 and not place.hub.asked("big.gguf") and "Hugging Face cache" in cached.stderr
+          and place.same("models/big.splw", "/test/gguf/resolve/0123456789abcdef/big.gguf"), "a file in the Hugging Face cache is used and not fetched")
+    check(os.path.islink(place.path("inputs/gguf/big.gguf")), "from where it is, by a link")
+    os.remove(place.path("models/big.splw"))
+    relinked = place.download("big")
+    check(relinked.returncode == 0 and not place.hub.asked("big.gguf") and "already there" in relinked.stderr and os.path.exists(place.path("models/big.splw")),
+          "and a link already in place is taken as the file it leads to")
+
+
+def resumed(root):
+    print("\na download stopped, and carried on")
+    place = Place(root, "resumed")
+    place.hub.rate = 4_000_000                                      # the 24 MB file takes six seconds
+    part = place.path("inputs/gguf/big.gguf.part")
+    first = place.start_download("big")
+    check(wait_for(lambda: os.path.exists(part) and os.path.getsize(part) > 3_000_000), "the file arrives in a part beside where it is to go")
+    running = place.status("big")
+    step = running and next((s for s in running["steps"] if s["state"] == "running"), None)
+    check(bool(step) and step["title"] == "Weights" and 0 < step["done"] < step["total"] == 24_000_000, "how far it has got is written down as it goes")
+    second = place.download("tiny")
+    check(second.returncode == 1 and "one runs at a time" in second.stderr, "a second install is refused while one runs")
+    first.send_signal(signal.SIGINT)
+    first.wait(20)
+    kept = os.path.getsize(part) if os.path.exists(part) else 0
+    check(first.returncode == 130 and 0 < kept < 24_000_000, f"stopped, it keeps what has arrived ({kept} bytes)")
+    check((place.status("big") or {}).get("state") == "cancelled", "and is written down as stopped")
+
+    place.hub.rate = None
+    place.hub.drop_after["/test/gguf/resolve/0123456789abcdef/big.gguf"] = 5_000_000
+    place.hub.requests.clear()
+    done = place.download("big")
+    ranges = [r[1] for r in place.hub.asked("big.gguf")]
+    check(done.returncode == 0 and ranges[:1] == [f"bytes={kept}-"], f"run again, it asks for the rest only ({ranges[:1]})")
+    again = int(ranges[1].split("=")[1].rstrip("-")) if len(ranges) == 2 and ranges[1] else 0
+    # (From as much as had arrived when it dropped, which is less than the hub had sent.)
+    check(kept < again < 24_000_000 and "trying again" in done.stderr, f"a connection that drops is carried on from in the same run ({ranges})")
+    check(place.same("models/big.splw", "/test/gguf/resolve/0123456789abcdef/big.gguf"), "and the file is whole: it matched its SHA-256")
+
+    # A file that is not the pinned one.
+    place.hub.files["/test/gguf/resolve/0123456789abcdef/other.gguf"] = content("not the file", 3_000_000)
+    wrong = place.download("other")
+    check(wrong.returncode == 1 and "SHA-256" in wrong.stderr and not os.path.exists(place.path("inputs/gguf/other.gguf"))
+          and not os.path.exists(place.path("inputs/gguf/other.gguf.part")) and not os.path.exists(place.path("models/other.splw")),
+          "a file that does not match its pinned SHA-256 is refused and removed")
+    check((place.status("other") or {}).get("state") == "failed" and "model.other" not in place.config(), "the install is written down as failed, and nothing is registered")
+    del place.hub.files["/test/tok/resolve/0123456789abcdef/tokenizer_config.json"]
+    shutil.rmtree(place.path("inputs/tokenizer"))
+    gone = place.download("other")
+    check(gone.returncode == 1 and "404" in gone.stderr, "a file the hub does not have is an error that says so")
+
+
+def first_launch(root):
+    print("\na server with no model")
+    registry = 'model = "tiny"\nmodel.tiny = "models/tiny.splw"\nmodel.other = "models/other.splw"\nmodel.big = "models/big.splw"\nmodelDwellSeconds = 0\n'
+    place = Place(root, "first", registry)
+    with Server(place) as server:
+        check(server.process.poll() is None and server.said("No model is installed yet"), "it starts, and says in its terminal that it has no model")
+        check(server.said("splosh download") and server.said(place.path("inputs/gguf/tiny.gguf")) and not server.said("press Enter"),
+              "it says how to get one and where own files go (and offers no Enter without a terminal)")
+        status, page = request(server.port, "GET", "/")
+        check(status == 200 and "Choose a model" in page and "/v1/downloads" in page, "its page at / offers the downloads")
+        state = server.downloads()
+        check(state["setup"] is True and state["default"] == "tiny" and state["active"] is None and [m["id"] for m in state["models"]] == ["tiny", "other", "big", "pack"]
+              and not any(m["installed"] for m in state["models"]) and state["models"][0]["place"] == os.path.realpath(place.path("inputs/gguf/tiny.gguf")),
+              "GET /v1/downloads lists the models, none installed, and where own files go")
+        status, code = chat(server.port, "hello")
+        check(status == 503 and code == "model_not_installed", f"a chat is answered 503 model_not_installed ({status} {code})")
+        status, listed = request(server.port, "GET", "/v1/models")
+        check(status == 200 and listed["loaded"] is None and listed["setup"] is True and all(m["state"] == "missing" for m in listed["data"]), "GET /v1/models lists the registry with nothing loaded")
+        shown = subprocess.run([BINARY, "models", "--port", str(server.port)], cwd=place.directory, env=place.environment, capture_output=True, text=True, timeout=30)
+        check("has no model yet" in shown.stdout and "splosh download" in shown.stdout, "`splosh models` says the server has no model, and what fetches one")
+        status, page = request(server.port, "GET", "/models")
+        check(request(server.port, "GET", "/settings")[0] == 200 and status == 200 and "Splosh models" in page, "the settings page and the models page are there")
+        check(all("artifactPath" in m and m["artifactPath"] == place.path(m["artifact"]) for m in state["models"]), "each model says where its converted file is to be")
+
+        check(request(server.port, "POST", "/v1/downloads", {"model": "tiny"}, {"Origin": "http://elsewhere.example"})[0] == 403, "an install asked for from another origin is refused")
+        check(request(server.port, "POST", "/v1/downloads", {"model": "nothing"})[0] == 404, "a model there is not is 404")
+        engine = subprocess.run(["pgrep", "-P", str(server.process.pid)], capture_output=True, text=True).stdout.split()
+        place.hub.rate = 2_000_000
+        status, started = request(server.port, "POST", "/v1/downloads", {"model": "tiny"}, {"Origin": f"http://127.0.0.1:{server.port}"})
+        check(status == 202 and started["active"] == "tiny", f"asked as the page asks, the install starts ({status})")
+        check(request(server.port, "POST", "/v1/downloads", {"model": "other"})[0] == 409, "a second is refused while it runs")
+        seen = set()
+
+        def loaded():
+            state = server.downloads()
+            install = state["models"][0]["install"]
+            if install:
+                seen.update(s["title"] for s in install["steps"] if s["state"] == "running")
+                seen.update("progress" for s in install["steps"] if s["state"] == "running" and s.get("total") and s.get("done"))
+            return state["setup"] is False
+
+        check(server.wait(loaded, 40), "when it is installed the engine is started on it")
+        check({"Weights", "progress"} <= seen, f"its steps and progress were shown on the way ({sorted(seen)})")
+        check(server.said("[2/5] Weights") and server.said("starting the engine"), "and said in the server's terminal")
+        after = subprocess.run(["pgrep", "-P", str(server.process.pid)], capture_output=True, text=True).stdout.split()
+        check(bool(after) and after != engine, "the engine was replaced, the port kept")
+        status, said = chat(server.port, "one two three", "tiny")
+        check(status == 200 and said == ["one", "two", "three"], f"the model answers ({status} {said})")
+        listed = request(server.port, "GET", "/v1/models")[1]
+        check(listed["loaded"] == "tiny" and listed["data"][0]["state"] == "loaded", "and is listed as loaded")
+        state = server.downloads()
+        check(state["models"][0]["installed"] and state["models"][0]["loaded"] and not state["models"][0]["needsRestart"], "the downloads list it as installed and loaded")
+
+        # Another, with a model loaded: as the models page asks.
+        place.hub.rate = None
+        status, started = request(server.port, "POST", "/v1/downloads", {"model": "other"})
+        check(status == 202 and server.wait(lambda: server.model("other")["installed"] and server.downloads()["active"] is None), "another model is installed while one is loaded")
+        status, said = chat(server.port, "four five", "other")
+        check(status == 200 and said == ["four", "five"] and request(server.port, "GET", "/v1/models")[1]["loaded"] == "other",
+              f"and can be loaded by naming it, with nothing restarted by hand ({status} {said})")
+
+        # One that the engine did not know when it started.
+        status, started = request(server.port, "POST", "/v1/downloads", {"model": "pack"})
+        check(status == 202 and server.wait(lambda: server.model("pack")["installed"] and server.downloads()["active"] is None)
+              and server.model("pack")["needsRestart"] and "model.pack" in place.config(), "a model the file did not register is registered, and waits for the engine to restart")
+
+        # Stopped from the page; and ended with the server.
+        place.hub.rate = 2_000_000
+        request(server.port, "POST", "/v1/downloads", {"model": "big"})
+        part = place.path("inputs/gguf/big.gguf.part")
+        check(wait_for(lambda: os.path.exists(part) and os.path.getsize(part) > 1_000_000), "a large download is under way")
+        status, stopped = request(server.port, "POST", "/v1/downloads/cancel", {"model": "big"})
+        big = next(m for m in stopped["models"] if m["id"] == "big")
+        check(status == 200 and stopped["active"] is None and big["install"]["state"] == "cancelled" and 0 < big["hereBytes"] < 24_000_000,
+              "stopped from the page, it keeps what has arrived and says so")
+        check(request(server.port, "POST", "/v1/downloads/cancel", {"model": "big"})[0] == 409, "stopping what is not running is 409")
+        request(server.port, "POST", "/v1/downloads", {"model": "big"})
+        check(server.wait(lambda: server.downloads()["active"] == "big"), "started again")
+        installer = (place.status("big") or {}).get("pid")
+    check(wait_for(lambda: installer and subprocess.run(["ps", "-p", str(installer)], capture_output=True).returncode != 0, 10), "the install ends when the server is stopped")
+    check(os.path.exists(part) and not os.path.exists(place.path("models/big.splw")), "with its part kept")
+
+
+def terminal(root):
+    print("\nthe server's terminal")
+    place = Place(root, "terminal", 'model.other = "models/other.splw"\nmodel.tiny = "models/tiny.splw"\n')
+    with Server(place, terminal=True) as server:
+        check(server.wait(lambda: server.said("press Enter")), "with a terminal, it offers Enter for the default")
+        os.write(server.keyboard, b"nonsense\n")
+        check(server.wait(lambda: server.said("no model called 'nonsense'")), "a name there is not is answered with the names there are")
+        os.write(server.keyboard, b"\n")
+        check(server.wait(lambda: server.downloads()["setup"] is False, 40), "Enter installs the default, and the engine starts on it")
+        check(server.said("is installed") and 'model = "tiny"' in place.config(),
+              "it is made the model the server starts on, the one the file would start on not being installed")
+        status, said = chat(server.port, "six seven")
+        check(status == 200 and said == ["six", "seven"] and request(server.port, "GET", "/v1/models")[1]["loaded"] == "tiny", f"and answers ({status} {said})")
+        asked = len(place.hub.requests)
+        os.write(server.keyboard, b"\n")
+        time.sleep(1.5)
+        check(len(place.hub.requests) == asked and server.downloads()["active"] is None, "Enter after that starts nothing")
+
+
+def main():
+    if not os.path.exists(BINARY):
+        sys.exit(f"missing binary {BINARY}; build it, or give the path of one (tools/download-smoke .build/debug/splosh)")
+    root = tempfile.mkdtemp(prefix="splosh-download-smoke-")
+    try:
+        command(root)
+        resumed(root)
+        first_launch(root)
+        terminal(root)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    print()
+    if failures:
+        print(f"{len(failures)} failed:")
+        for failure in failures:
+            print("  " + failure)
+        sys.exit(1)
+    print("download smoke: all checks passed")
+
+
+if __name__ == "__main__":
+    main()

@@ -46,6 +46,8 @@ public struct ServeConfig: Equatable, Sendable {
     public var prefixCacheMinTokens: Int = 1024
     /// One line on standard error per finished request.
     public var requestLog: Bool = true
+    /// A server started from a terminal shows its page in the browser once it is listening.
+    public var openBrowser = true
     /// Most requests worked on at once (BatchScheduler.maxActive); 0 means as many as there
     /// are slots.
     public var concurrency: Int = 0
@@ -89,8 +91,10 @@ public struct ServeConfig: Equatable, Sendable {
     /// before it is refused.
     public var switchWaitSeconds: Double = 120
 
-    public static let rowMajorWeightsPath = ".build/q4/weights.splw"
-    public static let tiledWeightsPath = ".build/q4/weights.tiled.splw"
+    // Converted models are kept in `models/`, a directory of their own: what cleans the build
+    // (`swift package clean` empties `.build`) is not to take 16 GB of model with it.
+    public static let rowMajorWeightsPath = "models/q4/weights.splw"
+    public static let tiledWeightsPath = "models/q4/weights.tiled.splw"
     /// The tiled artifact when it exists (one resident copy), otherwise the row-major one.
     public static var defaultWeightsPath: String {
         FileManager.default.fileExists(atPath: tiledWeightsPath) ? tiledWeightsPath : rowMajorWeightsPath
@@ -140,6 +144,20 @@ public struct ServeConfig: Equatable, Sendable {
             return (entry, note)
         }
         return (registry.first { $0.id == model } ?? registry[0], note)
+    }
+
+    /// The model a server starts on, of those whose artifact is there (`exists` says of a path):
+    /// as `startingModel`, but a starting model with no artifact gives way to the first
+    /// registered one that has one, with a line saying so. Nil when none has: the server then
+    /// starts without a model, to offer the downloads (see ServeDownloads).
+    ///
+    /// A model asked for by name (`held`, `cli`, or `weightsPath` where no models are registered)
+    /// is returned whether it is there or not: its absence is an error, and the caller's to report.
+    public func installedStart(held: String? = nil, cli: String? = nil, exists: (String) -> Bool) throws -> (model: ModelEntry, note: String?)? {
+        let chosen = try startingModel(held: held, cli: cli)
+        if exists(chosen.model.path) || cli != nil || chosen.model.id == held || (!hasRegistry && weightsPath != nil) { return chosen }
+        guard let other = registry.first(where: { exists($0.path) }) else { return nil }
+        return (other, (chosen.note ?? "") + "\(chosen.model.id), the model to start on, has no artifact at \(chosen.model.path); starting on \(other.id)\n")
     }
 
     /// Resolve the effective configuration with the documented precedence: defaults, TOML, CLI.
@@ -202,10 +220,11 @@ public struct ServeConfig: Equatable, Sendable {
             case "answerReserve", "toolCallOverrun":
                 guard let n = Int(value), n >= 0 else { throw ServeConfigError.invalidValue(key) }
                 if key == "answerReserve" { result.answerReserve = n } else { result.toolCallOverrun = n }
-            case "requestLog", "dictionaryStudy", "continueOnLimit":
+            case "requestLog", "dictionaryStudy", "continueOnLimit", "openBrowser":
                 guard value == "true" || value == "false" else { throw ServeConfigError.invalidValue(key) }
                 switch key {
                 case "requestLog": result.requestLog = value == "true"
+                case "openBrowser": result.openBrowser = value == "true"
                 case "continueOnLimit": result.continueOnLimit = value == "true"
                 default: result.dictionaryStudy = value == "true"
                 }

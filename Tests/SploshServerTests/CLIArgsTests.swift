@@ -409,10 +409,10 @@ struct CLIArgsTests {
         #expect(SpeculativeMode.allCases.map(\.rawValue) == ["on", "off"])
         #expect(KvFormat.allCases.map(\.rawValue) == ["int8", "q4"])
 
-        // The commands: rev4 §4.6's six, this plan's `doctor`, and `generate` and `models` since.
+        // The commands: rev4 §4.6's six, this plan's `doctor`, and `generate`, `models` and `download` since.
         #expect(
             CommandName.allCases.map(\.rawValue)
-                == ["doctor", "serve", "models", "convert", "bench", "cache", "oracle", "soak", "generate"]
+                == ["doctor", "serve", "models", "download", "convert", "bench", "cache", "oracle", "soak", "generate"]
         )
 
         // The batch range is closed at both ends (rev4 §6 M0.9).

@@ -63,8 +63,13 @@ enum ServeSupervisor {
     }
 
     /// `model` is the registered model to start on; nil, when none are registered, leaves the
-    /// engine to its configuration as before there was a registry.
-    static func run(tokens: [String], config: ServeConfig, takeover: Bool, model: String? = nil) -> Int32 {
+    /// engine to its configuration as before there was a registry. So it does when there is no
+    /// model to start on yet (`setup`): the engine then offers the downloads, and is replaced
+    /// by one with a model when one has been installed.
+    ///
+    /// `openPage` shows the server's page in the browser once the first engine is taking requests.
+    static func run(tokens: [String], config: ServeConfig, takeover: Bool, model: String? = nil, setup: Bool = false,
+                    openPage: Bool = false) -> Int32 {
         signal(SIGPIPE, SIG_IGN)
         // Two descriptors a connection: the default limit of 256 is about 120 of them.
         var limit = rlimit()
@@ -92,7 +97,19 @@ enum ServeSupervisor {
                 usleep(200)
             }
         }
-        return Supervisor(listener: listener, tokens: tokens, config: config, model: model).run(after: predecessor)
+        return Supervisor(listener: listener, tokens: tokens, config: config, model: model, setup: setup, openPage: openPage).run(after: predecessor)
+    }
+
+    /// Show the page of the server at `host` and `port` in the user's browser.
+    static func showPage(host: String, port: Int) {
+        // The address the server listens on, or this machine's own where it listens on all.
+        let local = ["", "0.0.0.0", "::", "[::]"].contains(host) ? "127.0.0.1" : host
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["http://\(local.contains(":") && !local.hasPrefix("[") ? "[\(local)]" : local):\(port)/"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
     }
 
     /// Whether a process is still running: one that has exited and not yet been collected by
@@ -225,8 +242,13 @@ private final class Supervisor: @unchecked Sendable {
     /// to finish what it has and be replaced. Guarded by `gate`.
     private var barrier: Date?
 
-    init(listener: Int32, tokens: [String], config: ServeConfig, model: String?) {
-        self.listener = listener; self.tokens = tokens; self.model = model
+    /// The first engine has no model: what is at / is the downloads, not the dashboard.
+    private let setup: Bool
+    /// The page is shown in the browser when the first engine is up.
+    private let openPage: Bool
+
+    init(listener: Int32, tokens: [String], config: ServeConfig, model: String?, setup: Bool, openPage: Bool) {
+        self.listener = listener; self.tokens = tokens; self.model = model; self.setup = setup; self.openPage = openPage
         host = config.host; port = config.port; restartDrain = config.restartDrainSeconds
         dwell = config.modelDwellSeconds; switchWait = config.switchWaitSeconds
         // (The variable is for tests of a model that never comes up.)
@@ -418,8 +440,9 @@ private final class Supervisor: @unchecked Sendable {
                     SploshCLI.writeStderr(String(format: "switched to %@ in %.1f s: the new engine is taking requests\n", target, Date().timeIntervalSince(restartBegan)))
                 } else {
                     SploshCLI.writeStderr(first
-                        ? "listening on http://\(host):\(port)  (dashboard at /, API at /v1; `splosh serve --restart` to replace the engine with the port kept open)\n"
+                        ? "listening on http://\(host):\(port)  (\(setup ? "the models to download" : "dashboard") at /, API at /v1; `splosh serve --restart` to replace the engine with the port kept open)\n"
                         : String(format: "restarted in %.1f s: the new engine is taking requests\n", Date().timeIntervalSince(restartBegan)))
+                    if first, openPage { ServeSupervisor.showPage(host: host, port: port) }
                 }
                 report(target: nil, phase: nil)
                 if restartAsked { restartAsked = false; beginRestart() }

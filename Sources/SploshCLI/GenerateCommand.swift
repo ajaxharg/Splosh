@@ -15,7 +15,7 @@ public enum GenerateCommand {
 
           --prompt <text>        text to complete
           --chat                 wrap the prompt as a single user turn of the chat template
-          --weights <path>       SPLW artifact; default the tiled artifact in .build/q4 if present
+          --weights <path>       SPLW artifact; default the tiled artifact in models/q4 if present
           --tokenizer <dir>      default inputs/tokenizer
           --max-tokens <n>       default 64
           --ids                  print token ids as well as text
@@ -667,12 +667,16 @@ public enum GenerateCommand {
         return passed ? ExitStatus.ok : 1
     }
 
-    /// The DFlash 2 checkpoint in the Hugging Face cache, if present.
+    /// The DFlash 2 checkpoint where `splosh download` puts it, or in the Hugging Face cache, if present.
     static func defaultDraftURL() -> URL? {
-        let snapshots = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".cache/huggingface/hub/models--incoai--Qwen3.8-27B-DFlash2/snapshots")
+        let draft = ((try? ModelLibrary.current()) ?? .builtIn).draft
+        let name = draft.files.first?.name ?? "model.safetensors"
+        let own = URL(fileURLWithPath: draft.directory, isDirectory: true).appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: own.path) { return own }
+        let snapshots = HubCache.directory().appendingPathComponent("models--" + draft.repo.replacingOccurrences(of: "/", with: "--"))
+            .appendingPathComponent("snapshots")
         let names = (try? FileManager.default.contentsOfDirectory(atPath: snapshots.path)) ?? []
-        return names.map { snapshots.appendingPathComponent($0).appendingPathComponent("model.safetensors") }
+        return names.map { snapshots.appendingPathComponent($0).appendingPathComponent(name) }
             .first { FileManager.default.fileExists(atPath: $0.path) }
     }
 

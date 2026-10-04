@@ -18,6 +18,7 @@ public enum CommandName: String, CaseIterable, Sendable {
     case doctor
     case serve
     case models
+    case download
     case convert
     case bench
     case cache
@@ -52,7 +53,7 @@ public enum SploshCLI {
         """
 
     private static let serveUsage = """
-        usage: splosh serve [--config <path>] [--port <n>] [--model <id>] [--restart]
+        usage: splosh serve [--config <path>] [--port <n>] [--model <id>] [--restart] [--no-open]
 
           --config <path>   default ./splosh.toml; an absent file means all defaults
           --port <n>        default 8091; the bind is 127.0.0.1 only
@@ -64,7 +65,12 @@ public enum SploshCLI {
           --takeover        start in place of the server already on that port, of any build: it
                             is asked to stop (it finishes its requests and saves its
                             conversations) and requests arriving meanwhile wait for this one
+          --no-open         do not show the server's page in the browser when it is up (a server
+                            started from a terminal does, unless openBrowser = false)
           --echo            serve without the model, saying back what is sent (for testing)
+
+        With no model installed the server starts all the same and offers the downloads: on its
+        page, and in the terminal, where Enter fetches the default (see `splosh download`).
         """
 
     /// The top-level usage text.
@@ -75,7 +81,8 @@ public enum SploshCLI {
           doctor    check the environment and print remediation for anything missing
           serve     start the loopback OpenAI-compatible HTTP service
           models    list the models the server can load, and load one
-          convert   MLX 4-bit safetensors -> the Splosh weight format
+          download  fetch a model from Hugging Face and make it ready to serve
+          convert   MLX safetensors or a GGUF file -> the Splosh weight format
           bench     step timing across 2K/8K/32K/128K contexts
           cache     inspect and purge the durable prefix cache
           oracle    diff the GPU engine against the CPU oracle
@@ -91,6 +98,7 @@ public enum SploshCLI {
         case .doctor: return doctorUsage
         case .serve: return serveUsage
         case .models: return ModelsCommand.usage
+        case .download: return DownloadCommand.usage
         case .convert: return ConvertCommand.usage
         case .bench: return BenchCommand.usage
         case .cache: return CacheCommand.usage
@@ -148,6 +156,8 @@ public enum SploshCLI {
             return ServeCommand.run(rest)
         case .models:
             return ModelsCommand.run(rest)
+        case .download:
+            return DownloadCommand.run(rest)
         case .convert:
             return ConvertCommand.run(rest)
         case .bench:
@@ -240,6 +250,8 @@ public struct ServeArguments: Equatable, Sendable {
     public var echo = false
     public var restart = false
     public var takeover = false
+    /// Leave the browser alone at this start (see `ServeConfig.openBrowser`).
+    public var noOpen = false
     public var help = false
 
     public init() {}
@@ -352,6 +364,8 @@ public enum CLIArguments {
                 result.restart = true
             case "--takeover":
                 result.takeover = true
+            case "--no-open":
+                result.noOpen = true
             default:
                 throw CLIError(unexpected(token, command: "serve"))
             }

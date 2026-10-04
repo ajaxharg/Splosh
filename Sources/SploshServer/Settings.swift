@@ -37,6 +37,11 @@ extension Routes {
             Response(status: .ok, headers: [.contentType: "text/html; charset=utf-8"],
                      body: ResponseBody(byteBuffer: ByteBuffer(string: SettingsPage.html)))
         }
+        // The models have a page of their own: the same settings file, the keys that are theirs.
+        router.get("models") { _, _ -> Response in
+            Response(status: .ok, headers: [.contentType: "text/html; charset=utf-8"],
+                     body: ResponseBody(byteBuffer: ByteBuffer(string: SettingsPage.models)))
+        }
         router.get("v1/settings") { _, _ -> Response in
             var response = ChatEndpoint.json(settings.read())
             response.headers[.cacheControl] = "no-store"
@@ -97,13 +102,20 @@ extension Routes {
     }
 }
 
-/// The settings page served at `/settings`. It reads `/v1/settings`, posts changes back, and
-/// can ask for the engine to be restarted.
+/// The settings page served at `/settings`, and the models page at `/models`. Each reads
+/// `/v1/settings`, posts changes back, and can ask for the engine to be restarted. They are one
+/// page that shows one part of the settings or the other: the models page has the groups
+/// "Models" and "Model", the model in memory and the ones to download; the settings page has
+/// the rest.
 enum SettingsPage {
-    static let html = #"""
+    static let html = page(models: false)
+    static let models = page(models: true)
+
+    private static func page(models: Bool) -> String {
+        #"""
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Splosh settings</title>
+<title>Splosh \#(models ? "models" : "settings")</title>
 <style>
 :root{color-scheme:light dark;--bg:#f6f6f4;--card:#fff;--ink:#1b1b1a;--mute:#6d6d68;--line:#e2e2dd;--a:#2f6fde;--b:#1f9d6b;--c:#c9861a;--e:#c0392b}
 @media(prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--ink:#ecece8;--mute:#96968f;--line:#30302d}}
@@ -124,11 +136,14 @@ button.link{border:0;background:none;color:var(--a);padding:0;font-size:12px}
 .foot .msg{flex:1 1 240px;color:var(--mute)}.foot .msg.bad{color:var(--e)}.foot .msg.wait{color:var(--c)}
 .pick{display:flex;gap:8px}.pick select{min-width:0}.pick button{flex:none}
 @media(max-width:640px){.row{grid-template-columns:minmax(0,1fr)}}
+\#(DownloadsPanel.style)
 </style></head><body>
-<h1>Settings</h1><div class="sub"><a href="/">← Dashboard</a> · <span id="file">loading…</span></div>
+<h1>\#(models ? "Models" : "Settings")</h1><div class="sub"><a href="/">← Dashboard</a> · <a href="\#(models ? "/settings" : "/models")">\#(models ? "Settings" : "Models")</a> · <span id="file">loading…</span></div>
 <div id="groups"></div>
 <div class="foot"><div class="msg" id="msg"></div><button id="restart" hidden>Restart engine</button><button id="discard" disabled>Discard</button><button class="go" id="save" disabled>Save</button></div>
 <script>
+// Which of the two pages this is: the models', or the rest of the settings.
+const MODELS=\#(models ? "true" : "false"),ofPage=x=>(x.group==='Models'||x.group==='Model')===MODELS;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const when={now:'applies at once',engine:'needs an engine restart',server:'needs the server stopped and started'};
@@ -145,12 +160,16 @@ function note(x){const v=shown(x),out=[];
  if(v!==null)out.push(`<button class="link" data-reset="${x.key}">use the default${(x.kind==='boolean'||x.kind==='choice')&&x.default!==null?` (${esc(x.default==='true'?'on':x.default==='false'?'off':x.default)})`:''}</button>`);
  return out.join(' · ')}
 function render(){if(!S)return;const groups=[];
- for(const x of S.settings){let g=groups.find(g=>g.name===x.group);if(!g)groups.push(g={name:x.group,rows:[]});
+ for(const x of S.settings.filter(ofPage)){let g=groups.find(g=>g.name===x.group);if(!g)groups.push(g={name:x.group,rows:[]});
   g.rows.push(`<div class="row"><div><label class="name" for="f-${x.key}">${esc(x.title)}</label> <span class="pill">${when[x.applies]}</span><div class="help">${esc(x.help)} <code>${x.key}</code></div></div><div>${control(x)}<div class="note" id="n-${x.key}">${note(x)}</div></div></div>`)}
  const mg=groups.find(g=>g.name==='Models');
  if(mg&&ofModels())mg.rows.unshift(`<div class="row"><div><span class="name">Loaded model</span> <span class="pill">loads at once</span><div class="help">The model in memory. Pick another and press Load to have it loaded in its place: requests in flight finish first, requests that arrive meanwhile wait, and the load takes a while. This is not saved to splosh.toml: after the server is stopped and started it loads the starting model below.</div></div><div id="lm"></div></div>`);
- $('groups').innerHTML=groups.map(g=>`<div class="card"><h2>${esc(g.name)}</h2>${g.rows.join('')}</div>`).join('');
+ // On the models page: the registered models first, then the ones that can be downloaded (see
+ // DownloadsPanel), then where the tokenizer and the draft model are.
+ groups.sort((a,b)=>(b.name==='Models')-(a.name==='Models'));
+ $('groups').innerHTML=groups.map(g=>`<div class="card"><h2>${esc(g.name==='Model'?'Files':g.name)}</h2>${g.rows.join('')}</div>`+(g.name==='Models'?'<div class="card" id="downloads"><h2>Download models</h2><div id="dl"></div></div>':'')).join('');
  if($('lm'))$('lm').innerHTML=pickbox();
+ dlDraw();
  $('file').textContent=S.file;foot()}
 function foot(message,kind){const changed=Object.keys(dirty).length,waiting=S?S.settings.filter(x=>x.pending):[];
  $('save').disabled=$('discard').disabled=busy||!changed;
@@ -171,7 +190,7 @@ async function send(path,body){const r=await fetch(path,{method:'POST',headers:{
 // The button's answer comes when the model is in memory, or has failed to be; meanwhile the control says so. A model with no artifact cannot be picked.
 let M=null,pick=null,loading=null,told=null,sig='',seq=0,seen=0,asking=false;
 const stage={dwell:'the loaded model has its turn first',waiting:'new requests wait while the loaded model finishes the ones it has',stopping:'the loaded model is being stopped',loading:'it is being loaded'};
-const ofModels=()=>!!(M&&S&&Array.isArray(M.data)&&M.switch&&S.settings.some(x=>x.key.startsWith('model.')));
+const ofModels=()=>MODELS&&!!(M&&S&&Array.isArray(M.data)&&M.switch&&M.loaded&&S.settings.some(x=>x.key.startsWith('model.')));
 const gib=b=>(b/1073741824).toFixed(2)+' GiB',at=id=>S.settings.findIndex(x=>x.key==='model.'+id),ok=id=>M.data.some(m=>m.id===id&&m.state!=='missing');
 function pickstate(){const sw=M.switch,cur=ok(pick)?pick:M.loaded,m=M.data.find(m=>m.id===cur),off=!!(loading||sw.target||sw.mode==='none');
  const [cls,text]=loading?['wait',`loading ${loading}…`]
@@ -193,8 +212,8 @@ $('groups').addEventListener('change',e=>{if(e.target.id!=='lm-sel')return;pick=
  $('lm-go').disabled=p.off||p.cur===M.loaded;$('lm-note').className='note '+p.cls;$('lm-note').textContent=p.text});
 $('groups').addEventListener('click',e=>{if(e.target.id==='lm-go')loadModel()});
 // What the server lists changes when another client has a model loaded, so it is asked for again.
-setInterval(async()=>{if(asking||document.hidden)return;asking=true;await models();asking=false},3000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)models()});
+if(MODELS){setInterval(async()=>{if(asking||document.hidden)return;asking=true;await models();asking=false},3000);
+ document.addEventListener('visibilitychange',()=>{if(!document.hidden)models()})}
 document.addEventListener('input',e=>{if(e.target.dataset.k)edited(e.target)});
 document.addEventListener('click',e=>{const k=e.target.dataset.reset;if(!k)return;const x=S.settings.find(x=>x.key===k);
  if(x.value===null)delete dirty[k];else dirty[k]=null;render()});
@@ -210,7 +229,11 @@ $('restart').onclick=async()=>{
  const again=async()=>{try{const s=await (await fetch('/v1/settings',{cache:'no-store'})).json();
    if(s.settings.some(x=>x.pending&&x.applies==='engine'))throw 0;S=s;busy=false;render();foot('The engine is back, on the saved settings.')}catch(e){setTimeout(again,1500)}};
  setTimeout(again,2500)};
-load().catch(()=>{$('file').textContent='could not read the settings'});
+\#(DownloadsPanel.script)
+// A model installed is one more to load, and may be a line more in splosh.toml: both are read again.
+DL.onChange=()=>{if(!Object.keys(dirty).length)load().catch(()=>{});else models()};
+load().then(()=>{if(MODELS)dlPoll()}).catch(()=>{$('file').textContent='could not read the settings'});
 </script></body></html>
 """#
+    }
 }

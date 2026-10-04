@@ -36,7 +36,7 @@ struct ServeSettingsTests {
     @Test("every setting offered is one the file's reader takes, and reads back")
     func everyKey() throws {
         let samples = [
-            "host": "0.0.0.0", "port": "9001", "modelID": "m", "requestLog": "false", "weightsPath": "/w", "tokenizerPath": "/t",
+            "host": "0.0.0.0", "port": "9001", "modelID": "m", "requestLog": "false", "openBrowser": "false", "weightsPath": "/w", "tokenizerPath": "/t",
             "draftPath": "none", "contextWindow": "1000", "slots": "3", "kvPages": "640", "kvFormat": "fp16", "maxRows": "64",
             "concurrency": "2", "decodeWeight": "2.5", "prefixCacheDir": "none", "prefixCacheGiB": "20", "prefixCacheMinTokens": "10",
             "drainSeconds": "5", "restartDrainSeconds": "7", "dictionaryStudy": "true", "dictionaryCorpus": "/c",

@@ -7,10 +7,11 @@ import SploshRuntime
 public enum Routes {
     public static func make(service: any InferenceService, contextWindow: Int = Server.contextLength,
                             behindHolder: Bool = false, settings: SettingsService? = nil,
-                            catalog: ModelCatalog? = nil) -> Router<BasicRequestContext> {
+                            catalog: ModelCatalog? = nil, downloads: DownloadService? = nil) -> Router<BasicRequestContext> {
         let router = Router<BasicRequestContext>()
         if behindHolder { router.add(middleware: OneRequestPerConnection()) }
         if let settings { addSettings(settings, to: router) }
+        if let downloads { addDownloads(downloads, to: router) }
         router.get("health") { _, _ -> String in "ok" }
         // The whole of a reply is made before any of it is sent, so a request is in flight for
         // as long as its handler runs.
@@ -72,10 +73,11 @@ extension Routes {
     /// The production router: the model-backed OpenAI-compatible API, live stats, the dashboard
     /// and the settings page.
     public static func make(backend: ChatBackend, behindHolder: Bool = false, settings: SettingsService? = nil,
-                            catalog: ModelCatalog? = nil) -> Router<BasicRequestContext> {
+                            catalog: ModelCatalog? = nil, downloads: DownloadService? = nil) -> Router<BasicRequestContext> {
         let router = Router<BasicRequestContext>()
         if behindHolder { router.add(middleware: OneRequestPerConnection()) }
         if let settings { addSettings(settings, to: router) }
+        if let downloads { addDownloads(downloads, to: router) }
         router.get("health") { _, _ -> String in "ok" }
         // In flight: a request being read and prepared here, then one the scheduler has.
         let arriving = InFlight()

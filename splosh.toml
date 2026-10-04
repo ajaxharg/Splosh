@@ -3,7 +3,7 @@ dictionaryStudy = false
 # The models the server can load, by name. A chat request naming one of them has it loaded in
 # place of the one in memory; `splosh models` lists them. `model` is the one the server starts on.
 model = "mq4"
-model.mq4 = ".build/q4/weights.tiled.splw"
-model.uq4 = ".build/gguf/ud-q4_k_m.splw"
-model.uq5 = ".build/gguf/ud-q5_k_m.splw"
-model.uq6 = ".build/gguf/ud-q6_k_m.splw"
+model.mq4 = "models/q4/weights.tiled.splw"
+model.uq4 = "models/gguf/ud-q4_k_m.splw"
+model.uq5 = "models/gguf/ud-q5_k_m.splw"
+model.uq6 = "models/gguf/ud-q6_k_m.splw"

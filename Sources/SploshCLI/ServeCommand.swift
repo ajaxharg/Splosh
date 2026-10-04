@@ -12,22 +12,31 @@ public enum ServeCommand {
             let configPath = args.config ?? "./splosh.toml"
             var config = try ServeConfig.resolve(path: configPath, cliPort: args.port)
             if args.restart { return ServeSupervisor.requestRestart(port: config.port) }
-            // The model to load, of those splosh.toml registers (see ServeConfig.startingModel).
+            // The model to load, of those splosh.toml registers whose artifact is here (see
+            // ServeConfig.installedStart). With none here there is none to load: the server
+            // starts all the same, to offer the downloads (`serveSetup`). `--echo` loads
+            // nothing, and without a registry asks for no artifact either.
             let environment = ProcessInfo.processInfo.environment
-            let starting = try config.startingModel(held: environment[ServeSupervisor.modelVariable], cli: args.model)
+            let held = environment[ServeSupervisor.modelVariable]
+            let chosen: (model: ModelEntry, note: String?)? = try args.echo && !config.hasRegistry
+                ? config.startingModel(held: held, cli: args.model)
+                : config.installedStart(held: held, cli: args.model) { ModelCatalog.fileSize($0) != nil }
+            let library = try ModelLibrary.current()
             // The process started by hand holds the port and runs the engine, this same command,
             // as a child serving on a private socket (see ServeSupervisor). SPLOSH_SERVE_DIRECT
             // is the engine on the port itself, in one process, for profiling.
             let socketPath = environment[ServeSupervisor.socketVariable]
             if socketPath == nil, environment["SPLOSH_SERVE_DIRECT"] == nil {
+                // With no model yet, the terminal takes the choice of one as the page does.
+                if chosen == nil, SetupPrompt.interactive(leader: getpid()) { SetupPrompt.start(library: library, config: config) }
                 // With models registered, the engine is told which to load from here on: a
                 // restart keeps the one that is loaded, whatever the file has come to say.
+                // Started by hand in a terminal, the server shows its page: the dashboard, or with
+                // no model the downloads. (`--echo` has no dashboard to show.)
+                let openPage = config.openBrowser && !args.noOpen && (!args.echo || chosen == nil)
+                    && isatty(STDIN_FILENO) != 0 && isatty(STDERR_FILENO) != 0
                 return ServeSupervisor.run(tokens: tokens.filter { $0 != "--takeover" }, config: config, takeover: args.takeover,
-                                           model: config.hasRegistry ? starting.model.id : nil)
-            }
-            if let note = starting.note { SploshCLI.writeStderr(note) }
-            if config.hasRegistry, config.weightsPath != nil {
-                SploshCLI.writeStderr("weightsPath is not used: splosh.toml registers models (its model.<id> lines), and the one loaded is \(starting.model.id)\n")
+                                           model: config.hasRegistry ? chosen?.model.id : nil, setup: chosen == nil, openPage: openPage)
             }
             // Behind the holder: it writes to the terminal from the background, and with the
             // holder gone there is nobody to answer, from the first moment (the model takes a
@@ -44,6 +53,18 @@ public enum ServeCommand {
             func settings(running: ServeConfig, apply: @escaping @Sendable (ServeConfig) -> Void) -> SettingsService {
                 ServeSettings.service(path: configPath, cliPort: args.port, loaded: loaded, running: running, holder: holder, apply: apply)
             }
+            guard let starting = chosen else {
+                return try serveSetup(config: config, configPath: configPath, socketPath: socketPath, holder: holder,
+                                      settings: settings(running: config) { _ in }, library: library)
+            }
+            if let note = starting.note { SploshCLI.writeStderr(note) }
+            if config.hasRegistry, config.weightsPath != nil {
+                SploshCLI.writeStderr("weightsPath is not used: splosh.toml registers models (its model.<id> lines), and the one loaded is \(starting.model.id)\n")
+            }
+            // The models that can be downloaded, for the models page (see ServeDownloads). An
+            // install ends with the process that holds the port, or with this one where none does.
+            let downloads = ServeDownloads.service(library: library, configPath: configPath, loaded: starting.model,
+                                                   known: config.registry.map(\.id), parent: holder ?? getpid())
             // The models there are, and which this engine has: a request for another is the
             // holder's to see to, by starting an engine with that one (see ModelCatalog).
             let reportPath = environment[ServeSupervisor.reportVariable]
@@ -52,16 +73,22 @@ public enum ServeCommand {
                 mode: holder == nil ? .none : ModelCatalog.Mode(rawValue: config.modelSwitch) ?? .request,
                 switching: { reportPath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }.flatMap(SwitchReport.read) })
             if args.echo {
-                return try serveEcho(config: config, socketPath: socketPath, settings: settings(running: config) { _ in }, catalog: catalog, model: starting.model)
+                return try serveEcho(config: config, socketPath: socketPath, settings: settings(running: config) { _ in }, catalog: catalog,
+                                     model: starting.model, downloads: downloads)
             }
             guard let device = MTLCreateSystemDefaultDevice() else { throw CLIError("no Metal device available") }
             let weightsPath = starting.model.path
+            // What fetches a model of the library that is not here.
+            let fetch = library.model(starting.model.id).map { "`splosh download \($0.id)` fetches it" }
             guard FileManager.default.fileExists(atPath: weightsPath) else {
                 throw CLIError(config.hasRegistry
-                    ? "weight artifact not found at \(weightsPath), where splosh.toml registers the model \(starting.model.id)"
-                    : "weight artifact not found at \(weightsPath); run `splosh convert` or set weightsPath in splosh.toml")
+                    ? "weight artifact not found at \(weightsPath), where splosh.toml registers the model \(starting.model.id)" + (fetch.map { "; " + $0 } ?? "")
+                    : "weight artifact not found at \(weightsPath); run `splosh download`, or set weightsPath in splosh.toml")
             }
             let tokenizerDir = URL(fileURLWithPath: config.tokenizerPath, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: tokenizerDir.appendingPathComponent("tokenizer.json").path) else {
+                throw CLIError("there is no tokenizer.json in \(config.tokenizerPath); \(fetch ?? "`splosh download` fetches it") (a model that is already here is not fetched again)")
+            }
             let tokenizer = try Tokenizer(tokenizerURL: tokenizerDir.appendingPathComponent("tokenizer.json"),
                                           configURL: tokenizerDir.appendingPathComponent("tokenizer_config.json"))
             let loadStarted = Date()
@@ -127,7 +154,7 @@ public enum ServeCommand {
             var running = config
             if scheduler.prefixStore != nil { running.prefixCacheAuto = false }
             let app = Server.application(backend: backend, host: config.host, port: config.port, socketPath: socketPath,
-                                         settings: settings(running: running) { live.apply($0) }, catalog: catalog)
+                                         settings: settings(running: running) { live.apply($0) }, catalog: catalog, downloads: downloads)
             if socketPath == nil {
                 SploshCLI.writeStderr("listening on http://\(config.host):\(config.port)  (dashboard at /, API at /v1)\n")
             }
@@ -234,7 +261,7 @@ public enum ServeCommand {
     /// items after it set for single models: "200,big=5000"); and the model SPLOSH_ECHO_FAIL_MODEL
     /// names does not load.
     private static func serveEcho(config: ServeConfig, socketPath: String?, settings: SettingsService,
-                                  catalog: ModelCatalog, model: ModelEntry) throws -> Int32 {
+                                  catalog: ModelCatalog, model: ModelEntry, downloads: DownloadService) throws -> Int32 {
         let environment = ProcessInfo.processInfo.environment
         if config.hasRegistry {
             guard ModelCatalog.fileSize(model.path) != nil else {
@@ -251,8 +278,35 @@ public enum ServeCommand {
         let interval = environment["SPLOSH_ECHO_INTERVAL_MS"].flatMap(Int.init)
         let app = Server.application(service: EchoInferenceService(interval: interval.map { .milliseconds($0) }),
                                      port: config.port, contextWindow: Server.contextLength, socketPath: socketPath, settings: settings,
-                                     catalog: catalog)
+                                     catalog: catalog, downloads: downloads)
         // A second signal ends it at once; the first is the HTTP layer's, which finishes replies in flight.
+        let signals = [SIGINT, SIGTERM].map { number -> DispatchSourceSignal in
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
+            source.setEventHandler { if (Self.stopping.next() ?? 0) > 1 { _exit(130) } }
+            source.resume()
+            return source
+        }
+        defer { signals.forEach { $0.cancel() } }
+        try awaitRun(app)
+        return ExitStatus.ok
+    }
+
+    /// A server with no model: none that splosh.toml registers has its artifact. It says so in
+    /// the terminal, serves the page that offers the downloads in place of the dashboard, and
+    /// when a model has been installed has the engine started on it (see ServeDownloads).
+    private static func serveSetup(config: ServeConfig, configPath: String, socketPath: String?, holder: pid_t?,
+                                   settings: SettingsService, library: ModelLibrary) throws -> Int32 {
+        let host = ["", "0.0.0.0", "::", "[::]"].contains(config.host) ? "127.0.0.1" : config.host
+        SploshCLI.writeStderr(ServeDownloads.welcome(library: library, config: config, address: "http://\(host):\(config.port)/",
+                                                     prompt: holder.map(SetupPrompt.interactive(leader:)) ?? false))
+        let downloads = ServeDownloads.service(library: library, configPath: configPath, loaded: nil, known: nil, parent: holder ?? getpid())
+        let app = Server.setupApplication(host: config.host, port: config.port, socketPath: socketPath, settings: settings, downloads: downloads) {
+            ModelsCommand.registered(in: (try? ServeConfig.load(path: configPath)) ?? config, setup: true)
+        }
+        ServeDownloads.startWhenInstalled(library: library, configPath: configPath, restart: settings.restart)
+        if socketPath == nil {
+            SploshCLI.writeStderr("listening on http://\(config.host):\(config.port)  (the models to download at /)\n")
+        }
         let signals = [SIGINT, SIGTERM].map { number -> DispatchSourceSignal in
             let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
             source.setEventHandler { if (Self.stopping.next() ?? 0) > 1 { _exit(130) } }

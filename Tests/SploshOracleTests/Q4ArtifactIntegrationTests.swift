@@ -21,7 +21,7 @@ struct Q4ArtifactIntegrationTests {
         if let raw = ProcessInfo.processInfo.environment["ARTIFACT"], !raw.isEmpty {
             return URL(fileURLWithPath: raw)
         }
-        return URL(fileURLWithPath: ".build/q4/weights.splw", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        return URL(fileURLWithPath: "models/q4/weights.splw", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
     }
 
     private func bf16Activations() -> [UInt16] {

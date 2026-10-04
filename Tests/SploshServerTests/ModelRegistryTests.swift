@@ -7,9 +7,9 @@ import SploshServer
 struct ModelRegistryTests {
     private static let registry = """
         model = "uq5"
-        model.mq4 = ".build/q4/weights.tiled.splw"   # the MLX pack
-        model.uq5 = ".build/gguf/ud-q5_k_m.splw"
-        model.uq6 = '.build/gguf/ud-q6_k_m.splw'
+        model.mq4 = "models/q4/weights.tiled.splw"   # the MLX pack
+        model.uq5 = "models/gguf/ud-q5_k_m.splw"
+        model.uq6 = 'models/gguf/ud-q6_k_m.splw'
         modelSwitch = "manual"
         modelDwellSeconds = 30
         switchWaitSeconds = 90.5
@@ -18,9 +18,9 @@ struct ModelRegistryTests {
     @Test("the registry is the model.<id> lines, in the order written")
     func parses() throws {
         let config = try ServeConfig.parse(Self.registry)
-        #expect(config.models == [ModelEntry(id: "mq4", path: ".build/q4/weights.tiled.splw"),
-                                  ModelEntry(id: "uq5", path: ".build/gguf/ud-q5_k_m.splw"),
-                                  ModelEntry(id: "uq6", path: ".build/gguf/ud-q6_k_m.splw")])
+        #expect(config.models == [ModelEntry(id: "mq4", path: "models/q4/weights.tiled.splw"),
+                                  ModelEntry(id: "uq5", path: "models/gguf/ud-q5_k_m.splw"),
+                                  ModelEntry(id: "uq6", path: "models/gguf/ud-q6_k_m.splw")])
         #expect(config.hasRegistry)
         #expect(config.registry == config.models)
         #expect(config.model == "uq5")

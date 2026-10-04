@@ -16,7 +16,7 @@ struct Q4StreamingPerformanceTests {
     @Test("artifact range-loading performance evidence")
     func artifactRangeLoadingPerformance() throws {
         let raw = ProcessInfo.processInfo.environment["ARTIFACT"]
-        let url = raw.map(URL.init(fileURLWithPath:)) ?? URL(fileURLWithPath: ".build/q4/weights.splw", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let url = raw.map(URL.init(fileURLWithPath:)) ?? URL(fileURLWithPath: "models/q4/weights.splw", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
         let file = try WeightFile(splwURL: url)
         let record = try file.q4(tensorName)
         let device = try #require(MTLCreateSystemDefaultDevice())

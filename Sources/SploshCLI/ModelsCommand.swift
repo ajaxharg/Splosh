@@ -39,6 +39,7 @@ public enum ModelsCommand {
                     print(table(listed))
                     print("\nit would start on \((try? config.startingModel().model.id) ?? config.registry[0].id), with switching on request "
                           + (config.modelSwitch == "request" ? "on" : "off (modelSwitch = \"manual\")"))
+                    if let hint = missingHint(listed) { print(hint) }
                 }
                 return ExitStatus.ok
             }
@@ -47,6 +48,7 @@ public enum ModelsCommand {
             } else {
                 print(table(listed))
                 print("\n" + summary(listed))
+                if let hint = missingHint(listed) { print(hint) }
             }
             return ExitStatus.ok
         } catch {
@@ -77,7 +79,8 @@ public enum ModelsCommand {
     // MARK: The list
 
     /// The registry as the file gives it, in the shape the server lists it in, with none loaded.
-    static func registered(in config: ServeConfig) -> JSONValue {
+    /// `setup` is a server's own list when it has no model: it is up to offer the downloads.
+    static func registered(in config: ServeConfig, setup: Bool = false) -> JSONValue {
         let models = config.registry.map { entry -> JSONValue in
             let size = ModelCatalog.fileSize(entry.path)
             return .object([
@@ -87,7 +90,7 @@ public enum ModelsCommand {
             ])
         }
         return .object([
-            ("object", .string("list")), ("data", .array(models)), ("loaded", .null),
+            ("object", .string("list")), ("data", .array(models)), ("loaded", .null), ("setup", .bool(setup)),
             ("switch", .object([("mode", .string(config.modelSwitch)), ("target", .null), ("phase", .null), ("parked", .int(0))])),
         ])
     }
@@ -109,6 +112,9 @@ public enum ModelsCommand {
     /// What the server says of switching: whether a request has a model loaded, and the switch
     /// it has in hand.
     static func summary(_ listed: JSONValue) -> String {
+        if listed["setup"]?.boolValue == true {
+            return "the server has no model yet: it is up to offer the downloads, on its page and with `splosh download`"
+        }
         let loaded = listed["loaded"]?.stringValue ?? "the loaded model"
         var lines: [String]
         switch listed["switch"]?["mode"]?.stringValue {
@@ -133,10 +139,18 @@ public enum ModelsCommand {
         return lines.joined(separator: "\n")
     }
 
+    /// What fetches the models listed as missing, of those `splosh download` knows; nil when none is.
+    static func missingHint(_ listed: JSONValue) -> String? {
+        let library = (try? ModelLibrary.current()) ?? .builtIn
+        let missing = (listed["data"]?.arrayValue ?? []).filter { $0["state"]?.stringValue == "missing" }.compactMap { $0["id"]?.stringValue }
+            .filter { library.model($0) != nil }
+        return missing.isEmpty ? nil : "missing: `splosh download <model>` fetches \(missing.joined(separator: ", "))"
+    }
+
     // MARK: The server
 
     /// One request to the server on this machine; nil when nothing answers.
-    private static func request(_ method: String, _ path: String, config: ServeConfig, body: Data? = nil,
+    static func request(_ method: String, _ path: String, config: ServeConfig, body: Data? = nil,
                                 timeout: TimeInterval) -> (status: Int, body: Data)? {
         // The address the server listens on, or this machine's own where it listens on all.
         let host = ["", "0.0.0.0", "::", "[::]"].contains(config.host) ? "127.0.0.1" : config.host

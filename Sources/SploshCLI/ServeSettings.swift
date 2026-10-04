@@ -37,12 +37,15 @@ struct ServeSetting: Sendable {
         ServeSetting(key: "port", group: "Server", title: "Port", help: "Port the server listens on. A port given on the command line wins.", kind: .integer, applies: .server),
         ServeSetting(key: "modelID", group: "Server", title: "Model name", help: "The name clients are given for the model.", kind: .text, applies: .engine),
         ServeSetting(key: "requestLog", group: "Server", title: "Request log", help: "One line in the server's terminal per finished request.", kind: .boolean, applies: .now),
+        ServeSetting(key: "openBrowser", group: "Server", title: "Open the page at start",
+                     help: "A server started from a terminal shows its page in the browser once it is listening. `splosh serve --no-open` leaves it out for one start.",
+                     kind: .boolean, applies: .server),
 
         ServeSetting(key: "weightsPath", group: "Model", title: "Weights", help: "The converted weight artifact. Not used when models are registered (model.<id> lines).", kind: .text, applies: .engine,
-                     unset: "the tiled artifact in .build/q4 when it exists, otherwise the row-major one"),
+                     unset: "the tiled artifact in models/q4 when it exists, otherwise the row-major one"),
         ServeSetting(key: "tokenizerPath", group: "Model", title: "Tokenizer", help: "Directory holding tokenizer.json and tokenizer_config.json.", kind: .text, applies: .engine),
         ServeSetting(key: "draftPath", group: "Model", title: "Draft model", help: "DFlash 2 draft checkpoint for speculative decoding. \"none\" switches speculation off.",
-                     kind: .text, applies: .engine, unset: "the copy in the Hugging Face cache, when there is one"),
+                     kind: .text, applies: .engine, unset: "the copy in inputs/draft or the Hugging Face cache, when there is one"),
 
         // The registered models' own lines follow these on the page (see `artifact(of:)`).
         ServeSetting(key: "model", group: "Models", title: "Starting model", help: "The registered model the server starts on. A model loaded since is kept when the engine restarts.",
@@ -123,6 +126,7 @@ extension ServeConfig {
         case "port": return String(port)
         case "modelID": return modelID
         case "requestLog": return String(requestLog)
+        case "openBrowser": return String(openBrowser)
         case "weightsPath": return weightsPath
         case "tokenizerPath": return tokenizerPath
         case "draftPath": return draftPath

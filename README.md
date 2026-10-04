@@ -6,8 +6,31 @@ agent harnesses actually send: several long conversations at once, each growing 
 result at a time. It is inspired by ideas in [Splash](https://github.com/incoai/splash) and
 [Splish](https://github.com/publicExcess/splish).
 
+Running it gives you two things on one local port:
+
+- **The model**, behind the OpenAI chat API, so any OpenAI-compatible client or agent harness
+  can use it.
+- **A web page that shows what the server is doing**, in detail and as it happens: each
+  session's context and how far its prompt has been read, the reply as it is being written,
+  the rates, the memory in use, the conversations it has cached and where the time of each
+  step goes. A second page holds the settings and the models.
+
 It exists to be fast at two things: reading long prompts (prefill) and writing replies
-(decode). This page says how to run it, and then why it is as fast as it is.
+(decode). This page says how to get it running, and then why it is as fast as it is.
+
+## Contents
+
+- [What it does on an M5 Pro](#what-it-does-on-an-m5-pro): the measured rates
+- [Getting it running](#getting-it-running): from a Mac with nothing installed to a served model
+- [Models](#models): the four there are, how to get one, changing between them
+- [The server](#the-server): the API, the dashboard, the models page, the settings
+- [Why it is fast](#why-it-is-fast)
+- [Measuring it yourself](#measuring-it-yourself)
+- [Where things are](#where-things-are)
+- [Limits](#limits)
+- [Credits](#credits)
+- [Licence](#licence)
+- [See also](#see-also)
 
 [![Buy me a tea](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20tea&emoji=%F0%9F%8D%B5&slug=andysteafund&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/andysteafund)
 
@@ -45,78 +68,334 @@ These are one machine's figures. How they were taken, and what else was tried, i
 [`audit/SPEED-PLAN-RESULTS.md`](audit/SPEED-PLAN-RESULTS.md); the harness is
 `tools/bench/engine-report`.
 
-## Requirements
+## Getting it running
 
-- An Apple silicon Mac whose GPU has the neural accelerator that Metal 4's tensor operations
-  run on. It was developed and measured on an M5 Pro only; nothing else has been tried.
-- macOS 27 and Xcode 27 (Swift 6, the Metal toolchain with `MetalPerformancePrimitives`).
-- Memory: 14.1 GiB for the weights (15 to 21 GiB for the Unsloth files, below), 154 MiB of
-  recurrent state per conversation slot, and 32.5 KiB of KV cache per token of context, taken
-  from a shared pool as contexts grow. On 64 GB the pool holds about 570K tokens across all
-  conversations with the 4-bit pack.
+From a Mac with nothing on it to a model being served is five steps. Steps 1 and 4 are the
+ones that take time: each is a large download.
 
-## Running it
+| | Step | What it does |
+|---|---|---|
+| 1 | [Install Xcode](#1-install-xcode) | the compilers for Swift and for the Metal kernels |
+| 2 | [Get the code](#2-get-the-code) | `git clone` |
+| 3 | [Build](#3-build) | the kernels, then the `splosh` program |
+| 4 | [Start the server](#4-start-the-server) | on its first launch it offers the models, and downloads and installs the one you pick |
+| 5 | [Use it](#5-use-it) | point a client at the API, and open the dashboard |
 
-**1. Build.**
+**What the Mac needs**
+
+- A GPU with the neural accelerator that Metal 4's tensor operations run on. Splosh was
+  developed and measured on an M5 Pro only; nothing else has been tried.
+- macOS 27.
+- Memory: 14.1 GiB for the default model's weights (15 to 21 GiB for the others, under
+  [Models](#models)), 154 MiB of recurrent state per conversation slot, and 32.5 KiB of KV
+  cache per token of context, taken from a shared pool as contexts grow. On 64 GB the pool
+  holds about 570K tokens across all conversations with the default model.
+- Disk: about 55 GB free to install the default model; 36 GB of it stays in use, or 20 GB once
+  the downloaded pack is deleted.
+
+### 1. Install Xcode
+
+Install Xcode 27 from the App Store and open it once, so that it finishes installing itself.
+It brings Swift 6.4, `git` and `make`. The Metal compiler is a separate component, fetched from
+a terminal:
+
+```bash
+xcodebuild -downloadComponent MetalToolchain
+```
+
+### 2. Get the code
+
+```bash
+git clone https://github.com/ajaxharg/Splosh.git
+```
+
+```bash
+cd Splosh
+```
+
+Everything below is run from this directory: the server looks for its settings, its models and
+its downloads under it.
+
+### 3. Build
 
 ```bash
 make shaders && swift build -c release --disable-sandbox
 ```
 
-**2. Get the model.** The weights are the `mlx-community/Qwen3.8-27B-4bit` pack (16 GB), at a
-pinned revision. The first command fetches the tokenizer and config, the second the pack. The
-script needs the Python packages pinned in `requirements.lock`.
+If anything is missing, `.build/release/splosh doctor` checks the machine and the toolchain
+and says what to do about each thing it finds.
 
-```bash
-python3 tools/fetch_inputs.py --fetch
-```
-
-```bash
-python3 tools/fetch_inputs.py --fetch-pack mlx-q4
-```
-
-**3. Convert it**, from the repository root: once to Splosh's format, once more into the tiled
-layout the engine runs from (the server looks for `.build/q4/weights.tiled.splw`;
-`weightsPath` in `splosh.toml` points it elsewhere).
-
-```bash
-.build/release/splosh convert --input inputs/mlx-q4 --out .build/q4/weights.splw --verify
-```
-
-```bash
-.build/release/splosh convert --retile --input .build/q4/weights.splw --out .build/q4/weights.tiled.splw
-```
-
-**4. Optional but worth it: the draft model.** Speculative decoding uses the DFlash 2 draft
-checkpoint `incoai/Qwen3.8-27B-DFlash2`. The server picks it up from the Hugging Face cache
-(`~/.cache/huggingface/hub`) if it is there, or from `draftPath`. Without it Splosh decodes one
-token a step, about 16 tokens/s.
-
-**5. Serve.**
+### 4. Start the server
 
 ```bash
 .build/release/splosh serve
 ```
 
-It listens on `127.0.0.1:8091` only. Point any OpenAI-compatible client at
+There is no model yet, so the server starts without one, says so, and opens its page in your
+browser. Choose a model in either place:
+
+- **In the browser**, at `http://127.0.0.1:8091/`. The page lists the models with what each
+  costs to download and to hold in memory; press **Download** on one. `mq4` is the one to start
+  with.
+- **In the terminal** the server is running in, press Enter for the default (`mq4`), or type
+  another model's name and press Enter.
+
+Splosh then does the rest, naming each step in the terminal and on the page with its progress:
+
+```mermaid
+flowchart LR
+    serve["splosh serve"] --> have{"a model<br>installed?"}
+    have -- no --> choose["choose one:<br>the page, or Enter<br>in the terminal"]
+    choose --> download["download<br>from Hugging Face"]
+    download --> check["check each file's<br>SHA-256"]
+    check --> convert["convert for<br>the engine"]
+    convert --> draft["fetch the<br>draft model"]
+    draft --> load["load the model"]
+    have -- yes --> load
+    load --> ready["API and dashboard<br>on port 8091"]
+```
+
+The download for `mq4` is 20 GB in all (the weights and the draft model). If it is stopped, or
+the connection drops, it carries on from where it got to the next time it is asked for. When
+the model is loaded, the page in the browser becomes the dashboard. The next `splosh serve`
+finds the model installed and loads it straight away.
+
+If you already have the model's files, or would rather fetch them yourself, see
+[Files you already have](#files-you-already-have).
+
+### 5. Use it
+
+The server listens on `127.0.0.1:8091` only. Point any OpenAI-compatible client at
 `http://127.0.0.1:8091/v1` with model `qwen3.8-27b`:
 
 ```bash
 curl http://127.0.0.1:8091/v1/chat/completions -H 'content-type: application/json' -d '{"model":"qwen3.8-27b","stream":true,"messages":[{"role":"user","content":"Write a Python function that merges overlapping intervals."}]}'
 ```
 
-What the server gives you:
+Open `http://127.0.0.1:8091/` to watch it work. Ctrl+C in the server's terminal stops it:
+requests in flight finish, and every conversation is written to disk for the next start.
+
+## Models
+
+Everything Splosh runs is one model, Qwen3.8-27B, at four precisions. One is in memory at a
+time, and the server changes between the ones that are installed.
+
+| Name | Weights | Download | In memory | Bits a weight | Weight error | Decode against `mq4` |
+|---|---|---|---|---|---|---|
+| `mq4` | MLX 4-bit pack, `mlx-community/Qwen3.8-27B-4bit` | 16.1 GB | 14.1 GiB | 4.5 | 9.3% | the default |
+| `uq4` | Unsloth `UD-Q4_K_M` | 16.5 GB | 15.0 GiB | 4.79 | 6.7% | not timed |
+| `uq5` | Unsloth `UD-Q5_K_M` | 19.8 GB | 18.1 GiB | 5.77 | 3.8% | 0.83 on code, 0.71 on prose |
+| `uq6` | Unsloth `UD-Q6_K_M` | 23.1 GB | 21.2 GiB | 6.76 | 2.2% | not timed |
+
+**Which one.** Start with `mq4`: it is the smallest, the fastest to decode, and the one the
+figures at the top of this page were measured on. The Unsloth files, from
+[`unsloth/Qwen3.8-27B-GGUF`](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF), run at the size
+they are on disk and buy accuracy with bytes: more bits a weight means more to read on every
+step, so decode slows roughly in proportion while prefill barely changes.
+
+Weight error is the RMS difference from the MLX 8-bit pack, relative, over a sample of rows
+from every fourth layer (`tools/gguf_check.py <file.gguf> --reference mlx-q8`). It is a plain
+measure of the weights: it gives no credit for Unsloth's calibration, which spends its
+precision where the outputs are most sensitive.
+
+### Getting one
+
+All of these start the same install, and each shows its steps and progress:
+
+| From | How |
+|---|---|
+| The server's first page | with no model installed, `http://127.0.0.1:8091/` lists the four: press Download |
+| The server's terminal | on that first launch, Enter installs the default; a model's name and Enter, that one |
+| The models page | `http://127.0.0.1:8091/models`, under "Download models", at any time: another model can be added while one is serving |
+| A shell | `.build/release/splosh download uq5`; with no name, the default |
+
+`splosh download --list` says which models are installed. What an install does:
+
+1. **Tokenizer**: the three small files that turn text into tokens and back, into
+   `inputs/tokenizer`.
+2. **Weights**: downloaded from Hugging Face into `inputs/`, at the revision Splosh was
+   measured on. A download that is stopped keeps what has arrived and carries on from there.
+   Every file is checked against its SHA-256 before it is used.
+3. **Convert**: the weights are written in the layout the engine maps straight into memory,
+   under `models/` (for `mq4`, `models/q4/weights.tiled.splw`). An Unsloth file takes about
+   half a minute.
+4. **Register**: a `model.<name>` line in `splosh.toml`, so the server and its clients can ask
+   for the model by name.
+5. **Draft model**: the DFlash 2 checkpoint `incoai/Qwen3.8-27B-DFlash2` (3.8 GB, into
+   `inputs/draft`), fetched once and shared by every model. Speculative decoding needs it:
+   without it Splosh writes one token a step, about 16 tokens/s.
+
+An install needs the download and the converted file on disk at once, and for `mq4` a second
+converted file for a while: 48 GB for `mq4`, 33 to 46 GB for the others, plus the draft model.
+
+A model installed while the server is running is listed on the models page and the dashboard
+at once, and can be loaded from there or by naming it in a request.
+
+### Where it is all kept
+
+Everything is under the directory the server is run from. An install says where it has put the
+model when it ends, and the models page shows the place with each model.
+
+| What | Where | Needed afterwards |
+|---|---|---|
+| The converted model, the one file the server reads | `models/q4/weights.tiled.splw` for `mq4`; `models/gguf/ud-q4_k_m.splw`, `ud-q5_k_m.splw`, `ud-q6_k_m.splw` for the others; or wherever its `model.<name>` line in `splosh.toml` says | yes |
+| What it was converted from | `inputs/mlx-q4/`, `inputs/gguf/` | no: it can be deleted, which leaves about the size in the table above |
+| The tokenizer and the draft model | `inputs/tokenizer/`, `inputs/draft/` | yes |
+| How each install stands, for the pages | `models/.downloads/` | no |
+
+The converted models have a directory of their own, `models/`, and not the build's: cleaning
+the build (`swift package clean` empties `.build`) leaves them alone. To keep a model somewhere
+else, move the file and change its `model.<name>` line.
+
+### Files you already have
+
+Files you have downloaded yourself go where Splosh would put them, under the names they have on
+Hugging Face. Then choose the model in any of the ways above: what is already there is checked
+and not downloaded again. Files in the Hugging Face cache (`~/.cache/huggingface/hub`, where
+`hf download` puts them) are found too.
+
+| Model | Put the files here |
+|---|---|
+| `mq4` | `inputs/mlx-q4/`: `config.json`, `model.safetensors.index.json`, `tokenizer.json` and the three `model-0000N-of-00003.safetensors` |
+| `uq4` | `inputs/gguf/Qwen3.8-27B-UD-Q4_K_M.gguf` |
+| `uq5` | `inputs/gguf/Qwen3.8-27B-UD-Q5_K_M.gguf` |
+| `uq6` | `inputs/gguf/Qwen3.8-27B-UD-Q6_K_M.gguf` |
+| the draft model | `inputs/draft/model.safetensors` |
+
+`splosh download --list` prints the same places as whole paths. A file of yours that is not
+the one Splosh was measured on (another revision, say) is used as it is, with a line saying so.
+
+### Changing between them
+
+`splosh.toml` registers the models by name, and the server can change between the ones that
+are installed. Only one is in memory at a time.
+
+```
+model = "uq5"
+model.mq4 = "models/q4/weights.tiled.splw"
+model.uq4 = "models/gguf/ud-q4_k_m.splw"
+model.uq5 = "models/gguf/ud-q5_k_m.splw"
+model.uq6 = "models/gguf/ud-q6_k_m.splw"
+```
+
+- `model` is the one the server starts on; `splosh serve --model uq6` overrides it. If that
+  one is not installed, the server starts on the first that is.
+- **A chat request that names another registered model has it loaded** in place of the one in
+  memory. Nothing running is cut: the request waits until the loaded model's requests have
+  finished, the engine is replaced, and the request is answered by the new model. A switch
+  took 10-14 s in a trial. A name that is not registered (`qwen3.8-27b`, say) is served by
+  whichever model is loaded, so existing clients need no change.
+- **Pick from a list** on the models page or in the dashboard's header: each model is shown
+  with its size and file, and Load switches to it.
+- `splosh models` prints the list and marks the loaded one; `splosh models --load uq4`
+  switches from the command line. `GET /v1/models` returns the same list.
+- A model that is still busy after `switchWaitSeconds` keeps its place and the request for the
+  other gets a 503 to retry; a model that fails to load gives way to the one before it.
+- Conversations on disk are kept per model, and found again when the server comes back to it.
+
+![Changing model: a request naming model B reaches the supervisor, which keeps it until model A's requests have finished, then the engine process is replaced by one with model B, which answers the kept request.](docs/figures/model-switch.svg)
+
+### What has been measured
+
+2026-10-03, on the M5 Pro:
+
+- **`uq5` is correct.** Its greedy continuation equals llama.cpp's on the same file, token for
+  token, for 64 and 96 tokens, with the prompt read through each of the three kernel shapes
+  (`tools/gguf-compare`). `uq4` and `uq6` load and answer sensibly but have not been compared.
+- **`uq5` against `mq4`**, one session through `splosh generate`, the same binary, power mode
+  Automatic (so both sides are below the High Power figures above), runs alternated: code with
+  speculation 61 against 73 tokens/s; an essay 22 against 31; a 9.6K-token prompt 319-388
+  against 268-362 tokens/s. A 16-row decode step takes 121 ms against 87. `uq4` and `uq6` have
+  not been timed.
+
+The GGUF formats understood are Q4_K, Q5_K, Q6_K, Q3_K, Q8_0, IQ4_NL, IQ4_XS and IQ3_S, which
+is everything in the three files above; a file holding any other is refused, with the tensor
+named. The MTP block these files carry is not used.
+
+### By hand
+
+`splosh download` is these commands run for you; they are here for a file it does not know, or
+an artifact wanted somewhere else.
+
+<details>
+<summary>Fetching and converting without <code>splosh download</code></summary>
+
+The tokenizer, into `inputs/tokenizer`, and the MLX pack, whole, into `inputs/mlx-q4` (the
+converter reads the pack's own `config.json` and `tokenizer.json` beside its weights).
+
+```bash
+python3 tools/fetch_inputs.py --fetch
+```
+
+```bash
+hf download mlx-community/Qwen3.8-27B-4bit --revision 3e6447f082e89cc7f0bc6e5441afd38dfce760ff --local-dir inputs/mlx-q4
+```
+
+Convert it from the repository root: once to Splosh's format, once more into the tiled layout
+the engine runs from.
+
+```bash
+.build/release/splosh convert --input inputs/mlx-q4 --out models/q4/weights.splw --verify
+```
+
+```bash
+.build/release/splosh convert --retile --input models/q4/weights.splw --out models/q4/weights.tiled.splw
+```
+
+A GGUF file. Conversion only re-orders the codes into the layout the kernels read; the result
+is the size of the source.
+
+```bash
+hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q5_K_M.gguf --local-dir inputs/gguf
+```
+
+```bash
+.build/release/splosh convert --input inputs/gguf/Qwen3.8-27B-UD-Q5_K_M.gguf --out models/gguf/ud-q5_k_m.splw
+```
+
+Then register the artifact as a model (a `model.<name>` line in `splosh.toml`), or, with no
+models registered, point `weightsPath` at it.
+
+</details>
+
+`tools/download-smoke` tests the downloads, the first launch and the pages against a stand-in
+for Hugging Face, and `tools/switch-smoke` the changing between models; neither loads a model.
+
+## The server
+
+`splosh serve` listens on `127.0.0.1:8091` and gives you an API for clients and two pages for
+you.
+
+**The API**
 
 - `POST /v1/chat/completions`, streaming or whole, with tools, `stop`, `temperature`, `top_p`,
   `top_k`, `seed`, and `reasoning_effort` (`none` turns thinking off). Text only: no images.
-- `GET /v1/models`: every model the server can load, the loaded one first (see "Several
-  models" below). `GET /v1/stats` for everything the dashboard shows, as JSON.
-- A dashboard at `http://127.0.0.1:8091/`: each session's context, progress and rates, memory,
-  cached conversations, time spent outside the GPU's steps, and step times by width. Rest the
-  pointer on a session to watch its reply being written, in a small window that can be made
-  larger; a click opens the large one. The window stays with the conversation from one request
-  to the next. The text comes from `GET /v1/sessions/<id>/reply`.
-- A settings page at `/settings` that edits `splosh.toml` and can restart the engine.
+- `GET /v1/models`: every model the server can load, the loaded one first (see
+  [Changing between them](#changing-between-them)). `GET /v1/stats` for everything the
+  dashboard shows, as JSON.
+
+**The dashboard**, at `http://127.0.0.1:8091/`, is the detailed view of what the server is
+doing now:
+
+- each session's context, how far its prompt has been read, and its rates;
+- the reply being written: rest the pointer on a session to watch it in a small window that
+  can be made larger; a click opens the large one. The window stays with the conversation from
+  one request to the next. The text comes from `GET /v1/sessions/<id>/reply`;
+- memory, divided into weights, KV cache, session state and checkpoints;
+- the conversations cached for later, the time spent outside the GPU's steps, and step times
+  by width.
+
+**The models page**, at `/models`, is where a model is loaded in place of the one in memory,
+where more are downloaded, and where the model settings of `splosh.toml` are. **The settings
+page**, at `/settings`, edits the rest of `splosh.toml` and can restart the engine. Each has a
+link to the other and to the dashboard.
+
+Started from a terminal, the server opens its page in the browser once it is listening: the
+dashboard, or on a first launch the models to download. `splosh serve --no-open`, or
+`openBrowser = false`, leaves the browser alone.
+
+**Stopping and restarting**
+
 - `splosh serve --restart`, from another terminal: the engine is replaced (a new build, new
   settings) while the port stays open. Requests in flight finish, new ones wait, and every
   conversation is picked up from disk where it was.
@@ -135,98 +414,21 @@ All optional, in `./splosh.toml` or the file given to `--config`.
 | `concurrency` | as many as slots | most requests worked on at once; the rest queue |
 | `contextWindow` | 262144 | longest prompt accepted |
 | `kvPages` | sized from memory | KV pool in 256-token pages, shared by all sessions |
-| `draftPath` | Hugging Face cache | `none` disables speculative decoding |
+| `draftPath` | `inputs/draft`, or the Hugging Face cache | `none` disables speculative decoding |
 | `prefixCacheDir` | `~/Library/Caches/Splosh/prefix-cache` | conversations on disk; `none` disables |
 | `prefixCacheGiB` | 16 | disk budget; least recently used go first |
 | `decodeWeight` | 1 | how a step is shared between sessions that are writing and prompts that are waiting. 1 gives a waiting prompt a full-width step with the writers riding along (best for agent batches); 20 or more leaves a running stream untouched |
 | `answerReserve` | 8192 | tokens of a reply's limit kept for its answer: thinking that has used the rest is closed by the server, so an answer is still written. At most a quarter of the limit; 0 lets thinking run to the limit |
 | `toolCallOverrun` | 8192 | tokens a tool call in progress at a reply's limit may run past it, so the reply ends on a whole call and an agent carries on; 0 ends every reply at its limit |
 | `requestLog` | true | one line per finished request: tokens reused, evaluated, generated, rates, and where the time outside the GPU went |
-| `model`, `model.<id>` | none | the models the server can load, and the one it starts on (see "Several models") |
+| `openBrowser` | true | a server started from a terminal shows its page in the browser once it is listening |
+| `model`, `model.<id>` | none | the models the server can load, and the one it starts on (see [Changing between them](#changing-between-them)) |
 | `modelSwitch` | request | `request`: a chat naming another registered model has it loaded. `manual`: only `splosh models --load` does |
 | `modelDwellSeconds`, `switchWaitSeconds` | 60, 120 | how long a model just loaded is kept before another may replace it, and how long a request for another model waits for the loaded one to go idle before it is refused |
 
 `splosh cache stats` lists what is stored on disk and `splosh cache purge --all` clears it.
 `tools/serve-smoke` is the end-to-end test: it loads the real model and checks, among other
 things, that greedy output matches reference token ids from `mlx-lm`.
-
-### Unsloth's GGUF files
-
-Splosh also runs the quantisations of the same model in
-[`unsloth/Qwen3.8-27B-GGUF`](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF), at the size
-they are on disk. They buy accuracy with bytes: more bits a weight means more to read on every
-step, so decode slows roughly in proportion while prefill barely changes.
-
-| Name used here | Weights | Bits a weight | In memory | Weight error |
-|---|---|---|---|---|
-| `mq4` | MLX 4-bit pack | 4.5 | 14.1 GiB | 9.3% |
-| `uq4` | `UD-Q4_K_M` | 4.79 | 15.0 GiB | 6.7% |
-| `uq5` | `UD-Q5_K_M` | 5.77 | 18.1 GiB | 3.8% |
-| `uq6` | `UD-Q6_K_M` | 6.76 | 21.2 GiB | 2.2% |
-
-Weight error is the RMS difference from the MLX 8-bit pack, relative, over a sample of rows
-from every fourth layer (`tools/gguf_check.py <file.gguf> --reference mlx-q8`). It is a plain
-measure of the weights: it gives no credit for Unsloth's calibration, which spends its
-precision where the outputs are most sensitive.
-
-What has been measured, 2026-10-03, on the M5 Pro:
-
-- **`uq5` is correct.** Its greedy continuation equals llama.cpp's on the same file, token for
-  token, for 64 and 96 tokens, with the prompt read through each of the three kernel shapes
-  (`tools/gguf-compare`). `uq4` and `uq6` load and answer sensibly but have not been compared.
-- **`uq5` against `mq4`**, one session through `splosh generate`, the same binary, power mode
-  Automatic (so both sides are below the High Power figures above), runs alternated: code with
-  speculation 61 against 73 tokens/s; an essay 22 against 31; a 9.6K-token prompt 319-388
-  against 268-362 tokens/s. A 16-row decode step takes 121 ms against 87. `uq4` and `uq6` have
-  not been timed.
-
-To add one, download the file and convert it. Conversion only re-orders the codes into the
-layout the kernels read; it takes about half a minute and the result is the size of the
-source.
-
-```bash
-hf download unsloth/Qwen3.8-27B-GGUF Qwen3.8-27B-UD-Q5_K_M.gguf --local-dir inputs/gguf
-```
-
-```bash
-.build/release/splosh convert --input inputs/gguf/Qwen3.8-27B-UD-Q5_K_M.gguf --out .build/gguf/ud-q5_k_m.splw
-```
-
-Then either point `weightsPath` at the artifact or register it as a model. The formats
-understood are Q4_K, Q5_K, Q6_K, Q3_K, Q8_0, IQ4_NL, IQ4_XS and IQ3_S, which is everything in
-the three files above; a file holding any other is refused, with the tensor named. The MTP
-block these files carry is not used.
-
-### Several models
-
-Register models by name in `splosh.toml` and the server can change between them. Only one is
-in memory at a time.
-
-```
-model = "uq5"
-model.mq4 = ".build/q4/weights.tiled.splw"
-model.uq4 = ".build/gguf/ud-q4_k_m.splw"
-model.uq5 = ".build/gguf/ud-q5_k_m.splw"
-model.uq6 = ".build/gguf/ud-q6_k_m.splw"
-```
-
-- `model` is the one the server starts on; `splosh serve --model uq6` overrides it.
-- **A chat request that names another registered model has it loaded** in place of the one in
-  memory. Nothing running is cut: the request waits until the loaded model's requests have
-  finished, the engine is replaced, and the request is answered by the new model. A switch
-  took 10-14 s in a trial. A name that is not registered (`qwen3.8-27b`, say) is served by
-  whichever model is loaded, so existing clients need no change.
-- **Pick from a list** on the settings page or in the dashboard's header: each model is shown
-  with its size and file, and Load switches to it.
-- `splosh models` prints the list and marks the loaded one; `splosh models --load uq4`
-  switches from the command line. `GET /v1/models` returns the same list.
-- A model that is still busy after `switchWaitSeconds` keeps its place and the request for the
-  other gets a 503 to retry; a model that fails to load gives way to the one before it.
-- Conversations on disk are kept per model, and found again when the server comes back to it.
-
-![Changing model: a request naming model B reaches the supervisor, which keeps it until model A's requests have finished, then the engine process is replaced by one with model B, which answers the kept request.](docs/figures/model-switch.svg)
-
-`tools/switch-smoke` tests all of this without loading a model.
 
 ## Why it is fast
 
@@ -384,14 +586,15 @@ alternatives interleaved, more than once, and say whether a figure is a burst or
 | `Sources/SploshRuntime/DraftModel.swift`, `LookupIndex.swift` | the two sources of drafts |
 | `Sources/SploshRuntime/PrefixStore.swift` | conversations on disk |
 | `Sources/SploshServer/` | the HTTP API, chat template, tool-call parsing, dashboard |
-| `Sources/SploshCLI/` | `serve`, `generate`, `convert`, `models`, `cache`, `doctor`; the supervisor that holds the port and replaces the engine |
+| `Sources/SploshCLI/` | `serve`, `download`, `models`, `generate`, `convert`, `cache`, `doctor`; the supervisor that holds the port and replaces the engine |
+| `Sources/SploshCLI/ModelLibrary.swift`, `HubDownload.swift`, `DownloadCommand.swift` | the models that can be fetched, each file's pinned SHA-256, the resumed download and the install |
 
 ## Limits
 
-One model, Qwen3.8-27B, in the quantisations above, one loaded at a time. One class of
-machine. Text and tool calls only. It binds to the loopback address
-and has no authentication, so it is a local server, not something to expose. It has run under
-real agent batches for days, not months.
+One model, Qwen3.8-27B, in the four quantisations under [Models](#models), one loaded at a
+time. One class of machine. Text and tool calls only. It binds to the loopback address and has
+no authentication, so it is a local server, not something to expose. It has run under real
+agent batches for days, not months.
 
 ## Credits
 

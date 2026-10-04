@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = int(os.environ.get("SPLOSH_SMOKE_PORT", "8193"))
 BASE = f"http://127.0.0.1:{PORT}"
 BINARY = os.environ.get("SPLOSH_BIN", os.path.join(ROOT, ".build/release/splosh"))
-ARTIFACT = next(p for p in (os.path.join(ROOT, ".build/q4/weights.tiled.splw"), os.path.join(ROOT, ".build/q4/weights.splw")) if os.path.exists(p) or p.endswith("weights.splw"))
+ARTIFACT = next(p for p in (os.path.join(ROOT, "models/q4/weights.tiled.splw"), os.path.join(ROOT, "models/q4/weights.splw")) if os.path.exists(p) or p.endswith("weights.splw"))
 REFERENCE_PROMPT = "The capital of France is"
 REFERENCE_IDS = [11751, 13, 198, 760, 6511, 314, 9564, 369, 19241, 13, 198, 760]
 

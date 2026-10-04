@@ -18,9 +18,11 @@ inputs/tokenizer/*
 !inputs/tokenizer/SHA256SUMS
 !inputs/SHA256SUMS
 
-# Converted weight artifacts (`convert --out`, default `$PWD/splosh-weights/`).
+# Converted weight artifacts (`convert --out`, default `$PWD/splosh-weights/`), and the models
+# `splosh download` installs: kept out of `.build`, which `swift package clean` empties.
 artifacts/
 splosh-weights/
+/models/
 
 # Durable cache directories.
 cache/

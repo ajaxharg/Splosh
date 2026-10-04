@@ -38,7 +38,7 @@ th,td{padding:6px 10px 6px 0;border-bottom:1px solid var(--line);white-space:now
 .part.tool{font-family:ui-monospace,Menlo,monospace;font-size:.92em;border:1px solid var(--line);border-radius:7px;padding:6px 9px;background:var(--bg)}
 .part b{display:block;font:500 11px/1.6 -apple-system,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.06em;color:var(--mute)}
 </style></head><body>
-<h1>Splosh</h1><div class="sub"><span id="mp"></span><span id="sub">connecting…</span> · <a href="/settings" style="color:var(--a);text-decoration:none">Settings</a></div>
+<h1>Splosh</h1><div class="sub"><span id="mp"></span><span id="sub">connecting…</span> · <a href="/models" style="color:var(--a);text-decoration:none">Models</a> · <a href="/settings" style="color:var(--a);text-decoration:none">Settings</a></div>
 <div class="grid">
 <div class="card"><h2>Decode</h2><div class="big"><span id="dec">–</span> <span class="unit">tok/s</span></div></div>
 <div class="card"><h2>Prefill</h2><div class="big"><span id="pre">–</span> <span class="unit">tok/s</span></div></div>

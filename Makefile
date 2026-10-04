@@ -176,7 +176,7 @@ check-m2.4:
 	 ./tools/swift-test-filter AttentionOracleTests
 
 # Artifact-backed end-to-end gate for the real server: reference token ids, streaming, prefix
-# cache, batching and memory accounting against .build/q4/weights.splw.
+# cache, batching and memory accounting against models/q4/weights.splw.
 check-serve: shaders
 	swift build -c release --disable-sandbox
 	./tools/serve-smoke

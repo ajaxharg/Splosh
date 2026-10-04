@@ -52,7 +52,7 @@ struct Q4TensorStreamingTests {
 
     private func artifact() throws -> WeightFile? {
         let raw = ProcessInfo.processInfo.environment["ARTIFACT"]
-        let url = raw.map(URL.init(fileURLWithPath:)) ?? URL(fileURLWithPath: ".build/q4/weights.splw", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let url = raw.map(URL.init(fileURLWithPath:)) ?? URL(fileURLWithPath: "models/q4/weights.splw", relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try WeightFile(splwURL: url)
     }
