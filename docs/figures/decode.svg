@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 436" width="960" role="img">
+<title>Speculative decoding: one cycle</title>
+<desc>A draft model proposes 16 tokens in 7 ms, the big model checks all 16 in one 62 ms pass over the weights, the first few are accepted, its own token replaces the first wrong guess and the rest are discarded; a second, shorter path copies the block from text already in the context.</desc>
+<style>
+  .bg{fill:#ffffff;stroke:#d0d7de;stroke-width:1.5}
+  text{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#1f2328}
+  .t{font-size:14px}
+  .ts{font-size:14px;fill:#59636e}
+  .tb{font-size:14px;font-weight:600}
+  .n{font-size:12px;fill:#59636e}
+  .h{font-size:16px;font-weight:600}
+  .ln{fill:none;stroke:#59636e;stroke-width:1.5}
+  .sep{fill:none;stroke:#d0d7de;stroke-width:1.5}
+  .mk{fill:#59636e}
+  .box,.panel,.blue,.amber,.green,.grey,.violet{stroke-width:1.5}
+  .box{fill:#ffffff;stroke:#59636e}
+  .panel{fill:#f6f8fa;stroke:#d0d7de}
+  .blue{fill:#ddf4ff;stroke:#0969da}
+  .amber{fill:#fff1c2;stroke:#bf8700}
+  .green{fill:#dafbe1;stroke:#1a7f37}
+  .grey{fill:#eaeef2;stroke:#8c959f}
+  .violet{fill:#f1e8ff;stroke:#8250df}
+  .dash{stroke-dasharray:5 4}
+  .heavy{stroke-width:3}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117;stroke:#30363d}
+    text{fill:#e6edf3}
+    .ts,.n{fill:#9198a1}
+    .ln{stroke:#9198a1}
+    .sep{stroke:#30363d}
+    .mk{fill:#9198a1}
+    .box{fill:#0d1117;stroke:#9198a1}
+    .panel{fill:#161b22;stroke:#30363d}
+    .blue{fill:#0c2d54;stroke:#58a6ff}
+    .amber{fill:#3b2a05;stroke:#d29922}
+    .green{fill:#0f2d1a;stroke:#3fb950}
+    .grey{fill:#21262d;stroke:#6e7681}
+    .violet{fill:#2b1b4d;stroke:#a371f7}
+  }
+</style>
+<defs>
+  <marker id="ah" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path class="mk" d="M0.5 0.5 L7.5 4 L0.5 7.5 Z"/></marker>
+</defs>
+<rect class="bg" x="0.75" y="0.75" width="958.5" height="434.5" rx="10"/>
+
+<!-- the cycle: draft, then check; box widths follow the times (12 px a millisecond) -->
+<text class="t" x="24" y="36">draft model proposes a block: 8 tokens, and 8 more, in 7 ms</text>
+<rect class="violet" x="24" y="48" width="84" height="48" rx="6"/>
+<text class="t" x="66" y="77" text-anchor="middle">draft</text>
+<line class="ln" x1="108" y1="72" x2="132" y2="72" marker-end="url(#ah)"/>
+<rect class="blue" x="132" y="48" width="744" height="48" rx="6"/>
+<text class="t" x="504" y="68" text-anchor="middle">big model checks all 16 rows in one pass over the weights,</text>
+<text class="t" x="504" y="86" text-anchor="middle">about 62 ms: the cost of producing one token</text>
+
+<!-- the block after the check -->
+<text class="n" x="24" y="114">box widths follow the times</text>
+<text class="n" x="24" y="152">the block,</text>
+<text class="n" x="24" y="166">after the check</text>
+<text class="n" x="314" y="124" text-anchor="middle">first 8: what the draft model would say alone</text>
+<text class="n" x="694" y="124" text-anchor="middle">8 more: count when the first 8 are all right</text>
+
+<rect class="green" x="132" y="134" width="42" height="40" rx="6"/>
+<text class="t" x="153" y="159" text-anchor="middle">1</text>
+<rect class="green" x="178" y="134" width="42" height="40" rx="6"/>
+<text class="t" x="199" y="159" text-anchor="middle">2</text>
+<rect class="green" x="224" y="134" width="42" height="40" rx="6"/>
+<text class="t" x="245" y="159" text-anchor="middle">3</text>
+<rect class="green heavy" x="270" y="134" width="42" height="40" rx="6"/>
+<text class="tb" x="291" y="159" text-anchor="middle">4</text>
+<rect class="grey" x="316" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="337" y="159" text-anchor="middle">5</text>
+<rect class="grey" x="362" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="383" y="159" text-anchor="middle">6</text>
+<rect class="grey" x="408" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="429" y="159" text-anchor="middle">7</text>
+<rect class="grey" x="454" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="475" y="159" text-anchor="middle">8</text>
+<rect class="grey" x="512" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="533" y="159" text-anchor="middle">9</text>
+<rect class="grey" x="558" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="579" y="159" text-anchor="middle">10</text>
+<rect class="grey" x="604" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="625" y="159" text-anchor="middle">11</text>
+<rect class="grey" x="650" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="671" y="159" text-anchor="middle">12</text>
+<rect class="grey" x="696" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="717" y="159" text-anchor="middle">13</text>
+<rect class="grey" x="742" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="763" y="159" text-anchor="middle">14</text>
+<rect class="grey" x="788" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="809" y="159" text-anchor="middle">15</text>
+<rect class="grey" x="834" y="134" width="42" height="40" rx="6"/>
+<text class="ts" x="855" y="159" text-anchor="middle">16</text>
+
+<path class="ln" d="M132 182 V188 H266 V182"/>
+<text class="t" x="199" y="208" text-anchor="middle">accepted</text>
+<path class="ln" d="M316 182 V188 H876 V182"/>
+<text class="t" x="596" y="208" text-anchor="middle">discarded</text>
+<line class="ln" x1="291" y1="178" x2="291" y2="226" marker-end="url(#ah)"/>
+<text class="t" x="270" y="244">the big model's own token replaces the first wrong guess</text>
+
+<!-- notes -->
+<text class="n" x="24" y="282">about 3 tokens a step on prose, 4-5 on new code,</text>
+<text class="n" x="24" y="297">7-10 when restructuring code it was given</text>
+<text class="n" x="496" y="282">rows being checked write a journal, not the recurrent state,</text>
+<text class="n" x="496" y="297">so a wrong guess costs one step and nothing is rolled back</text>
+<line class="sep" x1="24" y1="320" x2="936" y2="320"/>
+
+<!-- the second, shorter path -->
+<text class="h" x="24" y="350">A second, shorter path</text>
+<rect class="box" x="24" y="362" width="180" height="52" rx="6"/>
+<text class="t" x="114" y="383" text-anchor="middle">the reply repeats text</text>
+<text class="t" x="114" y="401" text-anchor="middle">already in the context</text>
+<line class="ln" x1="204" y1="388" x2="240" y2="388" marker-end="url(#ah)"/>
+<rect class="box" x="240" y="362" width="220" height="52" rx="6"/>
+<text class="t" x="350" y="383" text-anchor="middle">the block is copied from there:</text>
+<text class="t" x="350" y="401" text-anchor="middle">no draft pass</text>
+<line class="ln" x1="460" y1="388" x2="496" y2="388" marker-end="url(#ah)"/>
+<rect class="blue" x="496" y="362" width="152" height="52" rx="6"/>
+<text class="t" x="572" y="392" text-anchor="middle">big model checks it</text>
+<line class="ln" x1="648" y1="388" x2="684" y2="388" marker-end="url(#ah)"/>
+<rect class="green" x="684" y="362" width="180" height="52" rx="6"/>
+<text class="t" x="774" y="392" text-anchor="middle">about 15 tokens a step</text>
+</svg>

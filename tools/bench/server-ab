@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Interleaved comparison of two running OpenAI-compatible servers.
+
+    tools/bench/server-ab NAME=PORT NAME=PORT [--case short|context] [--tokens N] [--rounds R]
+
+Both servers must already be up (and both loaded for the whole run, so they see the same
+machine state). Requests alternate A B B A ...; each round uses a fresh prompt so neither
+server's prefix cache helps it. Prefill is prompt tokens over time to first token; decode is
+tokens after the first over the time they took. Medians are printed at the end.
+"""
+import argparse, json, statistics, time, urllib.request
+
+CODE = ["Write a Python function that parses a CSV file and returns a list of dictionaries, with type hints and a docstring.",
+        "Write a Python class implementing an LRU cache with get and put, with type hints and docstrings.",
+        "Write a Python function that merges overlapping intervals, with type hints, a docstring and a few tests."]
+PLACES = ["valley", "island", "forest", "lighthouse", "harbour", "ridge", "marsh", "quarry"]
+NAMES = ["Orla", "Dalia", "Brisa", "Vantor", "Kessel", "Marne", "Tolva", "Ibris", "Senn", "Calder"]
+
+def records(count, seed):
+    state, lines = seed * 2654435761 % 2**32 or 1, []
+    for index in range(1, count + 1):
+        state = (state * 1103515245 + 12345) % 2**31
+        lines.append(f"Record {index}: the {PLACES[state % 8]} of {NAMES[(state >> 8) % 10]} was surveyed in "
+                     f"{1800 + (state >> 12) % 200} and measured {(state >> 4) % 9000 + 100} units.")
+    return "\n".join(lines)
+
+def model(port):
+    return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models"))["data"][0]["id"]
+
+def ask(port, name, prompt, max_tokens):
+    body = {"model": name, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": max_tokens,
+            "reasoning_effort": "none", "stream": True, "stream_options": {"include_usage": True}}
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", json.dumps(body).encode(),
+                                     {"content-type": "application/json"})
+    start, first, last, usage = time.time(), None, None, None
+    with urllib.request.urlopen(request, timeout=3600) as response:
+        for line in response:
+            line = line.decode().strip()
+            if not line.startswith("data:") or line[5:].strip() == "[DONE]": continue
+            event = json.loads(line[5:])
+            usage = event.get("usage") or usage
+            for choice in event.get("choices", []):
+                if choice.get("delta", {}).get("content") or choice.get("delta", {}).get("reasoning_content"):
+                    last = time.time()
+                    first = first or last
+    prompt_tokens, completion = usage["prompt_tokens"], usage["completion_tokens"]
+    return prompt_tokens / (first - start), (completion - 1) / (last - first), prompt_tokens, completion
+
+parser = argparse.ArgumentParser()
+parser.add_argument("servers", nargs=2, metavar="NAME=PORT")
+parser.add_argument("--case", choices=["short", "context"], default="short")
+parser.add_argument("--tokens", type=int, default=6000, help="approximate prompt length for --case context")
+parser.add_argument("--rounds", type=int, default=4)
+args = parser.parse_args()
+servers = [(pair.split("=")[0], int(pair.split("=")[1])) for pair in args.servers]
+models = {name: model(port) for name, port in servers}
+results = {name: {"prefill": [], "decode": []} for name, _ in servers}
+for index in range(args.rounds):
+    if args.case == "short":
+        prompt, limit = CODE[index % len(CODE)], 300
+    else:
+        prompt = (f"Session {index + 1}.\n" + records(args.tokens // 27, index + 1)
+                  + "\nTask: List the first twelve records again, one per line, exactly as written.\nAnswer:")
+        limit = 260
+    for name, port in (servers if index % 2 == 0 else servers[::-1]):
+        prefill, decode, prompt_tokens, completion = ask(port, models[name], prompt, limit)
+        if args.case == "context": results[name]["prefill"].append(prefill)
+        results[name]["decode"].append(decode)
+        print(f"  round {index + 1} {name:8s} prompt {prompt_tokens:6d}  prefill {prefill:6.1f} tok/s  decode {decode:5.1f} tok/s ({completion} tokens)", flush=True)
+for name, _ in servers:
+    prefill = f"prefill median {statistics.median(results[name]['prefill']):6.1f} tok/s  " if results[name]["prefill"] else ""
+    print(f"{name:8s} {prefill}decode median {statistics.median(results[name]['decode']):5.1f} tok/s")

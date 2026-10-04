@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 404" width="960" role="img">
+<title>How a weight reaches the multiplier</title>
+<desc>The MLX 4-bit pack goes from memory to the accelerator as stored and is corrected per group afterwards, while a GGUF block is first decoded into 16-bit weights in scratch memory, so nothing needs correcting afterwards.</desc>
+<style>
+  .bg{fill:#ffffff;stroke:#d0d7de;stroke-width:1.5}
+  text{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#1f2328}
+  .t{font-size:14px}
+  .ts{font-size:14px;fill:#59636e}
+  .tb{font-size:14px;font-weight:600}
+  .n{font-size:12px;fill:#59636e}
+  .h{font-size:16px;font-weight:600}
+  .ln{fill:none;stroke:#59636e;stroke-width:1.5}
+  .sep{fill:none;stroke:#d0d7de;stroke-width:1.5}
+  .mk{fill:#59636e}
+  .box,.panel,.blue,.amber,.green,.grey,.violet{stroke-width:1.5}
+  .box{fill:#ffffff;stroke:#59636e}
+  .panel{fill:#f6f8fa;stroke:#d0d7de}
+  .blue{fill:#ddf4ff;stroke:#0969da}
+  .amber{fill:#fff1c2;stroke:#bf8700}
+  .green{fill:#dafbe1;stroke:#1a7f37}
+  .grey{fill:#eaeef2;stroke:#8c959f}
+  .violet{fill:#f1e8ff;stroke:#8250df}
+  .dash{stroke-dasharray:5 4}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117;stroke:#30363d}
+    text{fill:#e6edf3}
+    .ts,.n{fill:#9198a1}
+    .ln{stroke:#9198a1}
+    .sep{stroke:#30363d}
+    .mk{fill:#9198a1}
+    .box{fill:#0d1117;stroke:#9198a1}
+    .panel{fill:#161b22;stroke:#30363d}
+    .blue{fill:#0c2d54;stroke:#58a6ff}
+    .amber{fill:#3b2a05;stroke:#d29922}
+    .green{fill:#0f2d1a;stroke:#3fb950}
+    .grey{fill:#21262d;stroke:#6e7681}
+    .violet{fill:#2b1b4d;stroke:#a371f7}
+  }
+</style>
+<defs>
+  <marker id="ah" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path class="mk" d="M0.5 0.5 L7.5 4 L0.5 7.5 Z"/></marker>
+</defs>
+<rect class="bg" x="0.75" y="0.75" width="958.5" height="402.5" rx="10"/>
+
+<!-- column headings -->
+<text class="ts" x="112" y="38" text-anchor="middle">stored</text>
+<text class="ts" x="344" y="38" text-anchor="middle">prepared</text>
+<text class="ts" x="572" y="38" text-anchor="middle">multiplied</text>
+<text class="ts" x="768" y="38" text-anchor="middle">afterwards</text>
+
+<!-- lane one: the MLX 4-bit pack -->
+<text class="h" x="24" y="72">MLX 4-bit pack</text>
+<rect class="amber" x="24" y="84" width="176" height="92" rx="6"/>
+<text class="t" x="112" y="117" text-anchor="middle">4-bit codes,</text>
+<text class="t" x="112" y="135" text-anchor="middle">groups of 64,</text>
+<text class="t" x="112" y="153" text-anchor="middle">in tiles of 128 rows</text>
+<line class="ln" x1="200" y1="130" x2="488" y2="130" marker-end="url(#ah)"/>
+<text class="t" x="344" y="121" text-anchor="middle">as stored</text>
+<text class="n" x="344" y="152" text-anchor="middle">no preparation</text>
+<rect class="blue" x="488" y="84" width="168" height="92" rx="6"/>
+<text class="t" x="572" y="117" text-anchor="middle">accelerator:</text>
+<text class="t" x="572" y="135" text-anchor="middle">16-bit activations</text>
+<text class="t" x="572" y="153" text-anchor="middle">x raw codes</text>
+<line class="ln" x1="656" y1="130" x2="684" y2="130" marker-end="url(#ah)"/>
+<rect class="box" x="684" y="84" width="168" height="92" rx="6"/>
+<text class="t" x="768" y="117" text-anchor="middle">then per group:</text>
+<text class="t" x="768" y="135" text-anchor="middle">x scale, + offset x</text>
+<text class="t" x="768" y="153" text-anchor="middle">sum of the activations</text>
+<line class="ln" x1="852" y1="130" x2="880" y2="130" marker-end="url(#ah)"/>
+<rect class="box" x="880" y="114" width="56" height="32" rx="6"/>
+<text class="t" x="908" y="135" text-anchor="middle">output</text>
+
+<line class="sep" x1="24" y1="196" x2="936" y2="196"/>
+
+<!-- lane two: a GGUF file -->
+<text class="h" x="24" y="226">GGUF file</text>
+<rect class="amber" x="24" y="238" width="176" height="92" rx="6"/>
+<text class="t" x="112" y="262" text-anchor="middle">codes at their own</text>
+<text class="t" x="112" y="280" text-anchor="middle">width: 3 to 8 bits,</text>
+<text class="t" x="112" y="298" text-anchor="middle">some index a table;</text>
+<text class="t" x="112" y="316" text-anchor="middle">groups of 32</text>
+<line class="ln" x1="200" y1="284" x2="228" y2="284" marker-end="url(#ah)"/>
+<rect class="box" x="228" y="238" width="232" height="92" rx="6"/>
+<text class="t" x="344" y="262" text-anchor="middle">each thread group decodes the</text>
+<text class="t" x="344" y="280" text-anchor="middle">block it is about to use into</text>
+<text class="t" x="344" y="298" text-anchor="middle">16-bit weights in scratch memory,</text>
+<text class="t" x="344" y="316" text-anchor="middle">scale and offset applied</text>
+<line class="ln" x1="460" y1="284" x2="488" y2="284" marker-end="url(#ah)"/>
+<rect class="blue" x="488" y="238" width="168" height="92" rx="6"/>
+<text class="t" x="572" y="271" text-anchor="middle">accelerator:</text>
+<text class="t" x="572" y="289" text-anchor="middle">16-bit activations</text>
+<text class="t" x="572" y="307" text-anchor="middle">x that block</text>
+<line class="ln" x1="656" y1="284" x2="684" y2="284" marker-end="url(#ah)"/>
+<rect class="grey dash" x="684" y="238" width="168" height="92" rx="6"/>
+<text class="ts" x="768" y="280" text-anchor="middle">nothing to correct</text>
+<text class="ts" x="768" y="298" text-anchor="middle">afterwards</text>
+<line class="ln" x1="852" y1="284" x2="880" y2="284" marker-end="url(#ah)"/>
+<rect class="box" x="880" y="268" width="56" height="32" rx="6"/>
+<text class="t" x="908" y="289" text-anchor="middle">output</text>
+
+<line class="sep" x1="24" y1="350" x2="936" y2="350"/>
+<text class="t" x="24" y="376">Cost of the second lane: about 6% at 128 rows; at 16 rows the time follows the bits a weight.</text>
+</svg>

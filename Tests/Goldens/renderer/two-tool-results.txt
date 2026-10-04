@@ -1,0 +1,15 @@
+<|im_start|>assistant
+<tool_call>
+<function=one>
+</function>
+</tool_call>
+<|im_end|>
+<|im_start|>user
+<tool_response>
+one
+</tool_response>
+<tool_response>
+two
+</tool_response>
+<|im_end|>
+<|im_start|>assistant

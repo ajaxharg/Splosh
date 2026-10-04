@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PORT=8091
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG=$(mktemp /tmp/splosh-openai-compat.XXXXXX.log)
+MODELS=$(mktemp /tmp/splosh-openai-models.XXXXXX.json)
+STREAM=$(mktemp /tmp/splosh-openai-stream.XXXXXX.sse)
+pid=""
+run() { printf '+ '; printf '%q ' "$@"; printf '\n'; "$@"; }
+fail() { echo "openai-compat-check: FAIL: $*" >&2; exit 1; }
+cleanup() {
+  set +e
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then kill -TERM "$pid" 2>/dev/null || true; fi
+  if [[ -n "$pid" ]]; then wait "$pid" 2>/dev/null || true; fi
+  for _ in $(seq 1 50); do lsof -nP -iTCP:${PORT} -sTCP:LISTEN 2>/dev/null | grep -q . || break; sleep 0.1; done
+  if lsof -nP -iTCP:${PORT} -sTCP:LISTEN 2>/dev/null | grep -q .; then
+    echo 'openai-compat-check: stale listener after cleanup' >&2; lsof -nP -iTCP:${PORT} -sTCP:LISTEN >&2; exit 1
+  fi
+  rm -f "$LOG" "$MODELS" "$STREAM"
+}
+trap cleanup EXIT
+cd "$ROOT"
+[[ -z "$(lsof -nP -iTCP:${PORT} -sTCP:LISTEN 2>/dev/null || true)" ]] || fail "127.0.0.1:${PORT} already bound"
+# Use an existing executable when available; otherwise build and use the required Swift toolchain.
+bin="$(swift build --disable-sandbox --show-bin-path 2>/dev/null)/splosh"
+if [[ ! -x "$bin" ]]; then run swift build --disable-sandbox >/dev/null; bin="$(swift build --disable-sandbox --show-bin-path)/splosh"; fi
+[[ -x "$bin" ]] || fail 'splosh binary unavailable'
+echo "+ $bin serve --echo --port $PORT"
+"$bin" serve --echo --port "$PORT" >"$LOG" 2>&1 & pid=$!
+ready=0
+for _ in $(seq 1 60); do
+  if curl -fsS --max-time 1 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then ready=1; break; fi
+  kill -0 "$pid" 2>/dev/null || fail 'server exited before readiness'
+  sleep 0.5
+done
+[[ "$ready" == 1 ]] || fail 'health timeout after 30 seconds'
+# Reject wildcard or any non-loopback listener, and require exactly the expected endpoint.
+listeners=$(lsof -nP -iTCP:${PORT} -sTCP:LISTEN 2>/dev/null || true)
+echo "status: health=ready; listeners: ${listeners//$'\n'/ | }"
+grep -Eq 'TCP 127\.0\.0\.1:'"$PORT"' \(LISTEN\)' <<<"$listeners" || fail 'listener is not exactly 127.0.0.1'
+[[ "$(grep -c 'LISTEN' <<<"$listeners")" == 1 ]] || fail 'unexpected additional listeners'
+echo "+ curl -sS --fail-with-body http://127.0.0.1:${PORT}/v1/models > ${MODELS}"
+curl -sS --fail-with-body "http://127.0.0.1:${PORT}/v1/models" >"$MODELS"
+python3 - "$MODELS" <<'PY'
+import json,sys
+x=json.load(open(sys.argv[1])); rows=x.get('data',[])
+assert any(r.get('id')=='qwen3.8-27b' and r.get('context_length')==262144 for r in rows), 'missing model or incorrect context length'
+print('status: models=qwen3.8-27b context_length=262144')
+PY
+echo "+ curl -N --fail-with-body --max-time 15 -H Content-Type:application/json -d @Tests/Fixtures/m1_interop_turn.json http://127.0.0.1:${PORT}/v1/chat/completions > ${STREAM}"
+curl -N --fail-with-body --max-time 15 -H 'Content-Type: application/json' -d @Tests/Fixtures/m1_interop_turn.json "http://127.0.0.1:${PORT}/v1/chat/completions" >"$STREAM"
+python3 - "$STREAM" "$LOG" <<'PY'
+import json,re,sys
+text=open(sys.argv[1],encoding='utf8').read(); log=open(sys.argv[2],encoding='utf8',errors='replace').read()
+assert not re.search(r'(?i)(authorization|bearer)\s*[:=]', text+'\n'+log), 'authorization value leaked in output/log'
+records=[]; done=0
+for line in text.splitlines():
+    if not line.startswith('data: '): continue
+    payload=line[6:]
+    if payload=='[DONE]': done+=1; continue
+    try: records.append(json.loads(payload))
+    except Exception as e: raise AssertionError('malformed SSE JSON') from e
+assert done==1, f'expected exactly one [DONE], got {done}'
+reasons=[c.get('finish_reason') for f in records for c in f.get('choices',[]) if c.get('finish_reason') is not None]
+assert len(reasons)==1 and reasons[0] in {'stop','length','tool_calls'}, f'illegal SSE termination: {reasons!r}'
+contents=[c.get('delta',{}).get('content') for f in records for c in f.get('choices',[])]
+assert any(isinstance(x,str) and x for x in contents), 'empty-only content stream'
+assert not any(c.get('finish_reason') is not None for f in records[:-1] for c in f.get('choices',[])), 'duplicate finish'
+print(f'status: sse_records={len(records)} nonempty_content=yes finish_reason={reasons[0]} done=1')
+PY
+# Exercise fail-closed parser mutations (malformed JSON, missing model, termination, content, duplicate DONE/finish).
+python3 - <<'PY'
+import json
+valid='data: {"choices":[{"delta":{"content":"x"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+def check(s):
+ r=[]; d=0
+ for l in s.splitlines():
+  if not l.startswith('data: '): continue
+  p=l[6:]
+  if p=='[DONE]': d+=1
+  else: r.append(json.loads(p))
+ assert d==1 and any(c.get('delta',{}).get('content') for f in r for c in f['choices'])
+ assert sum(c.get('finish_reason') is not None for f in r for c in f['choices'])==1
+for bad in [valid.replace('{"choices"','{bad',1), valid.replace('"content":"x"','"content":""'), valid.replace('"stop"','"length"').replace('data: [DONE]','data: [DONE]\n\ndata: [DONE]'), valid.replace('"stop"','null')]:
+ try: check(bad); raise SystemExit('negative mutation unexpectedly passed')
+ except (AssertionError,json.JSONDecodeError): pass
+print('status: negative_checks=malformed_json,missing_content,duplicate_done,missing_finish exercised')
+PY
+echo "openai-compat-check: PASS"

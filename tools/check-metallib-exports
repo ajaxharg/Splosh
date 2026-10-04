@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Exact-set checker for a compiled Metal library's exported function names.
+
+Authority: `M0-WORK-ORDER.md` M0.2 and `IMPLEMENTATION-PLAN.md` §4.1. rev4 §3.2 fixes the cumulative
+expected kernel-function set per milestone; every kernel-introducing row asserts *that row's* set
+exactly -- nothing missing, nothing stale. A missing name fails this checker, and so does a name
+that is present but not expected.
+
+Usage:
+    check-metallib-exports <metallib-path> <expected-name>...
+    check-metallib-exports --from-list <observed-list-file> <expected-name>...
+
+The first form observes the set by running `xcrun -sdk macosx metal-nm` over the library and keeping
+defined text symbols. The second reads the *observed* set from a file, one name per line, so the
+negative path (a mismatch) can be exercised without building a second library -- that is what the
+committed fixtures under Tests/Fixtures/ are for. Blank lines and `#` comments are ignored.
+
+Exit code is 0 iff the observed set equals the expected set. Otherwise both sets are printed as
+`expected: [...]` and `observed: [...]` and the exit is 1.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# `metal-nm` prints the typed `nm` form, e.g. `0000005c T copy`. Only defined text symbols are
+# exported functions; undefined (`U`) and section (`S`) entries are not kernels.
+_NM_LINE = re.compile(r"^(?:[0-9a-fA-F]+\s+)?([A-Za-z])\s+(\S+)$")
+_DEFINED_TEXT = frozenset("TtWw")
+
+
+def observe_from_metallib(path: Path) -> tuple[set[str], str | None]:
+    """Return (names, error). Runs metal-nm over `path`."""
+    if not path.is_file():
+        return set(), f"no such metallib: {path}"
+    try:
+        completed = subprocess.run(
+            ["xcrun", "-sdk", "macosx", "metal-nm", str(path)],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return set(), "xcrun not found; is the Xcode command-line toolchain installed?"
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        return set(), f"metal-nm failed on {path} (exit {completed.returncode}): {detail}"
+    return parse_nm(completed.stdout), None
+
+
+def parse_nm(text: str) -> set[str]:
+    names: set[str] = set()
+    for line in text.splitlines():
+        match = _NM_LINE.match(line.strip())
+        if match and match.group(1) in _DEFINED_TEXT:
+            names.add(match.group(2))
+    return names
+
+
+def observe_from_list(path: Path) -> tuple[set[str], str | None]:
+    if not path.is_file():
+        return set(), f"no such observed-list file: {path}"
+    names: set[str] = set()
+    for line in path.read_text().splitlines():
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        names.add(entry)
+    return names, None
+
+
+def format_set(names: set[str]) -> str:
+    return "[" + ", ".join(sorted(names)) + "]"
+
+
+def main(argv: list[str]) -> int:
+    args = argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(
+            "usage: check-metallib-exports <metallib-path> <expected-name>...\n"
+            "       check-metallib-exports --from-list <observed-list-file> <expected-name>...",
+            file=sys.stderr,
+        )
+        return 2 if not args else 0
+
+    if args[0] == "--from-list":
+        if len(args) < 3:
+            print(
+                "check-metallib-exports: --from-list needs a file and at least one expected name",
+                file=sys.stderr,
+            )
+            return 2
+        observed, error = observe_from_list(Path(args[1]))
+        expected = set(args[2:])
+        source = args[1]
+    else:
+        if len(args) < 2:
+            print(
+                "check-metallib-exports: needs a metallib path and at least one expected name",
+                file=sys.stderr,
+            )
+            return 2
+        observed, error = observe_from_metallib(Path(args[0]))
+        expected = set(args[1:])
+        source = args[0]
+
+    if error is not None:
+        print(f"check-metallib-exports: {error}", file=sys.stderr)
+        return 1
+
+    if observed == expected:
+        print(f"check-metallib-exports: ok {source} exports exactly {format_set(expected)}")
+        return 0
+
+    print(f"check-metallib-exports: MISMATCH in {source}")
+    print(f"expected: {format_set(expected)}")
+    print(f"observed: {format_set(observed)}")
+    missing = expected - observed
+    extra = observed - expected
+    if missing:
+        print(f"missing:  {format_set(missing)}")
+    if extra:
+        print(f"unexpected: {format_set(extra)}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

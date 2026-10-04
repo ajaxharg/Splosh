@@ -1,0 +1,14 @@
+<|im_start|>user
+List files<|im_end|>
+<|im_start|>assistant
+<tool_call>
+<function=list>
+</function>
+</tool_call>
+<|im_end|>
+<|im_start|>user
+<tool_response>
+a.swift
+</tool_response>
+<|im_end|>
+<|im_start|>assistant

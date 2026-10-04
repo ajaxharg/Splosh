@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 336" width="960" role="img">
+<title>Many conversations in one step</title>
+<desc>Rows from eight conversations, writers in 16-row blocks and readers in the remaining rows, are packed into one 128-row step that reads the weights once, so eight agents together get about three times what one gets alone.</desc>
+<style>
+  .bg{fill:#ffffff;stroke:#d0d7de;stroke-width:1.5}
+  text{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#1f2328}
+  .t{font-size:14px}
+  .ts{font-size:14px;fill:#59636e}
+  .tb{font-size:14px;font-weight:600}
+  .n{font-size:12px;fill:#59636e}
+  .h{font-size:16px;font-weight:600}
+  .ln{fill:none;stroke:#59636e;stroke-width:1.5}
+  .sep{fill:none;stroke:#d0d7de;stroke-width:1.5}
+  .mk{fill:#59636e}
+  .box,.panel,.blue,.amber,.green,.grey,.violet{stroke-width:1.5}
+  .box{fill:#ffffff;stroke:#59636e}
+  .panel{fill:#f6f8fa;stroke:#d0d7de}
+  .blue{fill:#ddf4ff;stroke:#0969da}
+  .amber{fill:#fff1c2;stroke:#bf8700}
+  .green{fill:#dafbe1;stroke:#1a7f37}
+  .grey{fill:#eaeef2;stroke:#8c959f}
+  .violet{fill:#f1e8ff;stroke:#8250df}
+  .dash{stroke-dasharray:5 4}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117;stroke:#30363d}
+    text{fill:#e6edf3}
+    .ts,.n{fill:#9198a1}
+    .ln{stroke:#9198a1}
+    .sep{stroke:#30363d}
+    .mk{fill:#9198a1}
+    .box{fill:#0d1117;stroke:#9198a1}
+    .panel{fill:#161b22;stroke:#30363d}
+    .blue{fill:#0c2d54;stroke:#58a6ff}
+    .amber{fill:#3b2a05;stroke:#d29922}
+    .green{fill:#0f2d1a;stroke:#3fb950}
+    .grey{fill:#21262d;stroke:#6e7681}
+    .violet{fill:#2b1b4d;stroke:#a371f7}
+  }
+</style>
+<defs>
+  <marker id="ah" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path class="mk" d="M0.5 0.5 L7.5 4 L0.5 7.5 Z"/></marker>
+</defs>
+<rect class="bg" x="0.75" y="0.75" width="958.5" height="334.5" rx="10"/>
+
+<!-- eight conversations -->
+<text class="ts" x="24" y="30">eight conversations</text>
+<rect class="box" x="24" y="40" width="150" height="28" rx="6"/>
+<text class="t" x="99" y="59" text-anchor="middle">writing</text>
+<rect class="box" x="24" y="74" width="150" height="28" rx="6"/>
+<text class="t" x="99" y="93" text-anchor="middle">writing</text>
+<rect class="box" x="24" y="108" width="150" height="28" rx="6"/>
+<text class="t" x="99" y="127" text-anchor="middle">reading a prompt</text>
+<rect class="box" x="24" y="142" width="150" height="28" rx="6"/>
+<text class="t" x="99" y="161" text-anchor="middle">writing</text>
+<rect class="box" x="24" y="176" width="150" height="28" rx="6"/>
+<text class="t" x="99" y="195" text-anchor="middle">writing</text>
+<rect class="box" x="24" y="210" width="150" height="28" rx="6"/>
+<text class="t" x="99" y="229" text-anchor="middle">writing</text>
+<rect class="box" x="24" y="244" width="150" height="28" rx="6"/>
+<text class="t" x="99" y="263" text-anchor="middle">reading a prompt</text>
+<rect class="box" x="24" y="278" width="150" height="28" rx="6"/>
+<text class="t" x="99" y="297" text-anchor="middle">writing</text>
+
+<!-- the bus into the step -->
+<line class="ln" x1="174" y1="54" x2="198" y2="54"/>
+<line class="ln" x1="174" y1="88" x2="198" y2="88"/>
+<line class="ln" x1="174" y1="122" x2="198" y2="122"/>
+<line class="ln" x1="174" y1="156" x2="198" y2="156"/>
+<line class="ln" x1="174" y1="190" x2="198" y2="190"/>
+<line class="ln" x1="174" y1="224" x2="198" y2="224"/>
+<line class="ln" x1="174" y1="258" x2="198" y2="258"/>
+<line class="ln" x1="174" y1="292" x2="198" y2="292"/>
+<line class="ln" x1="198" y1="54" x2="198" y2="292"/>
+<line class="ln" x1="198" y1="173" x2="222" y2="173" marker-end="url(#ah)"/>
+
+<!-- the weights, read once -->
+<rect class="amber" x="297" y="40" width="266" height="52" rx="6"/>
+<text class="t" x="430" y="62" text-anchor="middle">weights: read once</text>
+<text class="n" x="430" y="80" text-anchor="middle">however many conversations share the step</text>
+<line class="ln" x1="430" y1="92" x2="430" y2="146" marker-end="url(#ah)"/>
+
+<!-- the step -->
+<text class="h" x="222" y="134">one step: 128 rows</text>
+<rect class="blue" x="222" y="147" width="52" height="52" rx="6"/>
+<text class="t" x="248" y="178" text-anchor="middle">16</text>
+<rect class="blue" x="274" y="147" width="52" height="52" rx="6"/>
+<text class="t" x="300" y="178" text-anchor="middle">16</text>
+<rect class="blue" x="326" y="147" width="52" height="52" rx="6"/>
+<text class="t" x="352" y="178" text-anchor="middle">16</text>
+<rect class="blue" x="378" y="147" width="52" height="52" rx="6"/>
+<text class="t" x="404" y="178" text-anchor="middle">16</text>
+<rect class="blue" x="430" y="147" width="52" height="52" rx="6"/>
+<text class="t" x="456" y="178" text-anchor="middle">16</text>
+<rect class="blue" x="482" y="147" width="52" height="52" rx="6"/>
+<text class="t" x="508" y="178" text-anchor="middle">16</text>
+<rect class="blue" x="534" y="147" width="104" height="52" rx="6"/>
+<text class="t" x="586" y="178" text-anchor="middle">prompt rows</text>
+<path class="ln" d="M222 207 V213 H530 V207"/>
+<text class="n" x="376" y="232" text-anchor="middle">16-row blocks for the writers</text>
+<path class="ln" d="M538 207 V213 H638 V207"/>
+<text class="n" x="638" y="232" text-anchor="end">the remaining rows,</text>
+<text class="n" x="638" y="246" text-anchor="end">for a reader's prompt</text>
+<text class="n" x="222" y="296">step widths: 16, 32, 64, 96, 128 rows</text>
+
+<!-- the result -->
+<line class="ln" x1="638" y1="173" x2="674" y2="173" marker-end="url(#ah)"/>
+<rect class="panel" x="674" y="40" width="262" height="266" rx="6"/>
+<text class="t" x="690" y="76">a step for eight: about 210 ms</text>
+<rect class="blue" x="690" y="86" width="210" height="22" rx="6"/>
+<text class="t" x="690" y="140">a step for one: about 80 ms</text>
+<rect class="blue" x="690" y="150" width="80" height="22" rx="6"/>
+<text class="tb" x="690" y="214">eight agents together get</text>
+<text class="tb" x="690" y="232">about three times what</text>
+<text class="tb" x="690" y="250">one gets alone</text>
+<text class="n" x="690" y="290">bar lengths follow the times</text>
+</svg>

@@ -1,0 +1,7 @@
+{
+  "model": "qwen3.8-27b",
+  "messages": [
+    {"role": "user", "content": "Say hello from the M1 scripted wire turn."}
+  ],
+  "stream": true
+}

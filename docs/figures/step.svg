@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 460" width="960" role="img">
+<title>One step through the model</title>
+<desc>Rows enter, pass through an embedding, 64 layers built from a repeating unit of three gated-delta layers and one attention layer, a final norm and an output head, and logits come out only for the rows that need them; weights, recurrent state and the KV cache are read from memory along the way.</desc>
+<style>
+  .bg{fill:#ffffff;stroke:#d0d7de;stroke-width:1.5}
+  text{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#1f2328}
+  .t{font-size:14px}
+  .ts{font-size:14px;fill:#59636e}
+  .tb{font-size:14px;font-weight:600}
+  .n{font-size:12px;fill:#59636e}
+  .h{font-size:16px;font-weight:600}
+  .ln{fill:none;stroke:#59636e;stroke-width:1.5}
+  .mk{fill:#59636e}
+  .box,.panel,.blue,.amber,.green,.grey,.violet{stroke-width:1.5}
+  .box{fill:#ffffff;stroke:#59636e}
+  .panel{fill:#f6f8fa;stroke:#d0d7de}
+  .blue{fill:#ddf4ff;stroke:#0969da}
+  .amber{fill:#fff1c2;stroke:#bf8700}
+  .green{fill:#dafbe1;stroke:#1a7f37}
+  .grey{fill:#eaeef2;stroke:#8c959f}
+  .violet{fill:#f1e8ff;stroke:#8250df}
+  .dash{stroke-dasharray:5 4}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117;stroke:#30363d}
+    text{fill:#e6edf3}
+    .ts,.n{fill:#9198a1}
+    .ln{stroke:#9198a1}
+    .mk{fill:#9198a1}
+    .box{fill:#0d1117;stroke:#9198a1}
+    .panel{fill:#161b22;stroke:#30363d}
+    .blue{fill:#0c2d54;stroke:#58a6ff}
+    .amber{fill:#3b2a05;stroke:#d29922}
+    .green{fill:#0f2d1a;stroke:#3fb950}
+    .grey{fill:#21262d;stroke:#6e7681}
+    .violet{fill:#2b1b4d;stroke:#a371f7}
+  }
+</style>
+<defs>
+  <marker id="ah" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8" markerHeight="8" orient="auto" markerUnits="userSpaceOnUse"><path class="mk" d="M0.5 0.5 L7.5 4 L0.5 7.5 Z"/></marker>
+</defs>
+<rect class="bg" x="0.75" y="0.75" width="958.5" height="458.5" rx="10"/>
+
+<!-- the pipeline -->
+<rect class="box" x="24" y="71" width="104" height="56" rx="6"/>
+<text class="t" x="76" y="104" text-anchor="middle">rows in</text>
+<text class="n" x="24" y="146">a row: one token position</text>
+<text class="n" x="24" y="160">of one conversation; a step</text>
+<text class="n" x="24" y="174">carries up to 128 of them</text>
+<line class="ln" x1="128" y1="99" x2="156" y2="99" marker-end="url(#ah)"/>
+
+<rect class="box" x="156" y="71" width="88" height="56" rx="6"/>
+<text class="t" x="200" y="104" text-anchor="middle">embedding</text>
+<line class="ln" x1="244" y1="99" x2="272" y2="99" marker-end="url(#ah)"/>
+
+<rect class="box" x="272" y="24" width="308" height="150" rx="6"/>
+<text class="h" x="288" y="48">64 layers</text>
+<rect class="blue" x="288" y="58" width="100" height="24" rx="6"/>
+<text class="t" x="338" y="74.5" text-anchor="middle">gated-delta</text>
+<rect class="blue" x="288" y="86" width="100" height="24" rx="6"/>
+<text class="t" x="338" y="102.5" text-anchor="middle">gated-delta</text>
+<rect class="blue" x="288" y="114" width="100" height="24" rx="6"/>
+<text class="t" x="338" y="130.5" text-anchor="middle">gated-delta</text>
+<rect class="blue" x="288" y="142" width="100" height="24" rx="6"/>
+<text class="t" x="338" y="158.5" text-anchor="middle">attention</text>
+<path class="ln" d="M396 58 H402 V166 H396"/>
+<text class="h" x="414" y="96">× 16</text>
+<text class="n" x="414" y="118">3 gated-delta layers,</text>
+<text class="n" x="414" y="132">then 1 attention layer,</text>
+<text class="n" x="414" y="146">16 times</text>
+<line class="ln" x1="580" y1="99" x2="608" y2="99" marker-end="url(#ah)"/>
+
+<rect class="box" x="608" y="71" width="92" height="56" rx="6"/>
+<text class="t" x="654" y="104" text-anchor="middle">final norm</text>
+<line class="ln" x1="700" y1="99" x2="728" y2="99" marker-end="url(#ah)"/>
+
+<rect class="blue" x="728" y="71" width="98" height="56" rx="6"/>
+<text class="t" x="777" y="104" text-anchor="middle">output head</text>
+<line class="ln" x1="826" y1="99" x2="854" y2="99" marker-end="url(#ah)"/>
+
+<rect class="box" x="854" y="71" width="80" height="56" rx="6"/>
+<text class="t" x="894" y="104" text-anchor="middle">logits</text>
+<text class="n" x="934" y="146" text-anchor="end">only for the rows</text>
+<text class="n" x="934" y="160" text-anchor="end">that need them</text>
+
+<!-- zoom into one layer -->
+<line class="ln dash" x1="272" y1="174" x2="24" y2="198"/>
+<line class="ln dash" x1="580" y1="174" x2="936" y2="198"/>
+<rect class="panel" x="24" y="198" width="912" height="148" rx="6"/>
+<text class="h" x="44" y="222">What one layer does</text>
+<text class="n" x="44" y="242">residual stream</text>
+<line class="ln" x1="44" y1="250" x2="926" y2="250" marker-end="url(#ah)"/>
+
+<!-- branch one: norm, mixer, add -->
+<path class="ln" d="M82 250 V293" marker-end="url(#ah)"/>
+<rect class="box" x="52" y="294" width="60" height="32" rx="6"/>
+<text class="t" x="82" y="315" text-anchor="middle">norm</text>
+<line class="ln" x1="112" y1="310" x2="140" y2="310" marker-end="url(#ah)"/>
+<rect class="box" x="140" y="268" width="256" height="66" rx="6"/>
+<text class="n" x="152" y="284">mixer</text>
+<rect class="blue" x="152" y="294" width="100" height="32" rx="6"/>
+<text class="t" x="202" y="315" text-anchor="middle">gated-delta</text>
+<text class="ts" x="268" y="315" text-anchor="middle">or</text>
+<rect class="blue" x="284" y="294" width="100" height="32" rx="6"/>
+<text class="t" x="334" y="315" text-anchor="middle">attention</text>
+<path class="ln" d="M396 310 H430 V262" marker-end="url(#ah)"/>
+<circle class="box" cx="430" cy="250" r="11"/>
+<line class="ln" x1="424" y1="250" x2="436" y2="250"/>
+<line class="ln" x1="430" y1="244" x2="430" y2="256"/>
+<text class="n" x="430" y="234" text-anchor="middle">add</text>
+
+<!-- branch two: norm, MLP, add -->
+<path class="ln" d="M496 250 V293" marker-end="url(#ah)"/>
+<rect class="box" x="466" y="294" width="60" height="32" rx="6"/>
+<text class="t" x="496" y="315" text-anchor="middle">norm</text>
+<line class="ln" x1="526" y1="310" x2="554" y2="310" marker-end="url(#ah)"/>
+<rect class="box" x="554" y="268" width="312" height="66" rx="6"/>
+<text class="n" x="566" y="284">MLP</text>
+<rect class="blue" x="566" y="294" width="104" height="32" rx="6"/>
+<text class="t" x="618" y="315" text-anchor="middle">two products</text>
+<line class="ln" x1="670" y1="310" x2="686" y2="310" marker-end="url(#ah)"/>
+<rect class="box" x="686" y="294" width="52" height="32" rx="6"/>
+<text class="t" x="712" y="315" text-anchor="middle">SiLU</text>
+<line class="ln" x1="738" y1="310" x2="754" y2="310" marker-end="url(#ah)"/>
+<rect class="blue" x="754" y="294" width="100" height="32" rx="6"/>
+<text class="t" x="804" y="315" text-anchor="middle">one product</text>
+<path class="ln" d="M866 310 H892 V262" marker-end="url(#ah)"/>
+<circle class="box" cx="892" cy="250" r="11"/>
+<line class="ln" x1="886" y1="250" x2="898" y2="250"/>
+<line class="ln" x1="892" y1="244" x2="892" y2="256"/>
+<text class="n" x="892" y="234" text-anchor="middle">add</text>
+
+<!-- what each part reads from memory -->
+<path class="ln" d="M202 388 V327" marker-end="url(#ah)"/>
+<path class="ln" d="M334 388 V327" marker-end="url(#ah)"/>
+<path class="ln" d="M618 388 V327" marker-end="url(#ah)"/>
+<path class="ln" d="M804 388 V327" marker-end="url(#ah)"/>
+<rect class="amber" x="24" y="388" width="240" height="52" rx="6"/>
+<text class="t" x="144" y="409" text-anchor="middle">recurrent state</text>
+<text class="t" x="144" y="428" text-anchor="middle">154 MiB a conversation</text>
+<rect class="amber" x="280" y="388" width="180" height="52" rx="6"/>
+<text class="t" x="370" y="409" text-anchor="middle">KV cache</text>
+<text class="t" x="370" y="428" text-anchor="middle">32.5 KiB a token</text>
+<rect class="amber" x="476" y="388" width="460" height="52" rx="6"/>
+<text class="t" x="706" y="409" text-anchor="middle">weights: 14.1 GiB, read once a step (52 ms)</text>
+<text class="n" x="706" y="428" text-anchor="middle">read by every matrix product in the step</text>
+</svg>

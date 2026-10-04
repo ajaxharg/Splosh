@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Run one filtered Swift test target and fail if the filter matched zero tests.
+
+Authority: `M0-WORK-ORDER.md` M0.6, `IMPLEMENTATION-PLAN.md` §4.8.
+
+`swift test --filter <name>` exits **0** when the filter matches nothing, so a gate written as
+`swift test --filter Foo` reads as a pass while running no assertions at all. This wrapper closes
+that hole: it runs the filter, parses the number of tests the harness actually executed, and exits
+non-zero unless at least one test ran and `swift test` itself succeeded.
+
+It also always passes `--disable-sandbox`, because SwiftPM's own `sandbox-exec` cannot start under
+this host's file sandbox (`IMPLEMENTATION-PLAN.md` §4.8: the flag belongs in the wrapper rather than
+in each task's prose).
+
+Usage:
+    ./tools/swift-test-filter <filter> [extra `swift test` arguments...]
+
+Exit codes: 0 when >= 1 test ran and the suite passed; 1 otherwise.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+
+# swift-testing prints `Test run with 2 tests passed after 0.001 seconds.`; XCTest prints
+# `Executed 2 tests, with 0 failures ...`. Both are accepted so the wrapper does not silently stop
+# counting if a target's harness ever changes.
+_COUNT_PATTERNS = (
+    re.compile(r"Test run with\s+(\d+)\s+tests?\b"),
+    re.compile(r"Executed\s+(\d+)\s+tests?\b"),
+)
+
+# swift-testing's "nothing matched" forms, matched explicitly so the failure names the real cause.
+_ZERO_MATCH_HINTS = (
+    re.compile(r"no tests found", re.IGNORECASE),
+    re.compile(r"filter .* matched no tests", re.IGNORECASE),
+)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print(f"usage: {argv[0]} <filter> [extra swift test arguments...]", file=sys.stderr)
+        return 2
+
+    test_filter = argv[1]
+    extra = argv[2:]
+
+    command = ["swift", "test", "--disable-sandbox", "--filter", test_filter, *extra]
+    print(f"swift-test-filter: {' '.join(command)}", flush=True)
+
+    completed = subprocess.run(command, capture_output=True, text=True)
+    output = completed.stdout + completed.stderr
+    sys.stdout.write(output)
+    sys.stdout.flush()
+
+    counts = []
+    for pattern in _COUNT_PATTERNS:
+        counts.extend(int(m.group(1)) for m in pattern.finditer(output))
+
+    if completed.returncode != 0:
+        print(
+            f"swift-test-filter: FAIL — `swift test --filter {test_filter}` exited "
+            f"{completed.returncode}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not counts:
+        hint = ""
+        for pattern in _ZERO_MATCH_HINTS:
+            match = pattern.search(output)
+            if match:
+                hint = f" ({match.group(0).strip()})"
+                break
+        print(
+            f"swift-test-filter: FAIL — could not find a test count in the output for filter "
+            f"'{test_filter}'{hint}. A zero-test match is a failure, not a pass "
+            f"(rev4 §8 item 2(a)).",
+            file=sys.stderr,
+        )
+        return 1
+
+    ran = max(counts)
+    if ran == 0:
+        print(
+            f"swift-test-filter: FAIL — filter '{test_filter}' matched 0 tests. "
+            f"`swift test` exits 0 on an unmatched filter, so this is the failure the wrapper "
+            f"exists to catch (rev4 §8 item 2(a)).",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"swift-test-filter: PASS — {ran} test(s) ran for filter '{test_filter}'")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

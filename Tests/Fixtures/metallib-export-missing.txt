@@ -1,0 +1,4 @@
+# Negative fixture for tools/check-metallib-exports (M0.2).
+# An OBSERVED export set that OMITS `copy`. Expected set on the command line is `copy`,
+# so the checker must fail and name `copy` as missing.
+rmsnorm

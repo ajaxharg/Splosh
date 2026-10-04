@@ -1,0 +1,5 @@
+<|im_start|>system
+Be concise.<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant

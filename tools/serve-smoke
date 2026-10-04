@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Artifact-backed smoke test for `splosh serve`.
+
+Starts the real server against the q4 artifact and checks, end to end, that it loads the model,
+reports its memory, generates the reference tokens, streams them incrementally, reuses a cached
+prefix, and batches concurrent sessions. Exits non-zero on the first failed check.
+
+The greedy reference ids were produced by mlx-lm 0.32.0 on the same q4 pack.
+"""
+import json, os, re, shutil, signal, subprocess, sys, tempfile, threading, time, urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PORT = int(os.environ.get("SPLOSH_SMOKE_PORT", "8193"))
+BASE = f"http://127.0.0.1:{PORT}"
+BINARY = os.environ.get("SPLOSH_BIN", os.path.join(ROOT, ".build/release/splosh"))
+ARTIFACT = next(p for p in (os.path.join(ROOT, ".build/q4/weights.tiled.splw"), os.path.join(ROOT, ".build/q4/weights.splw")) if os.path.exists(p) or p.endswith("weights.splw"))
+REFERENCE_PROMPT = "The capital of France is"
+REFERENCE_IDS = [11751, 13, 198, 760, 6511, 314, 9564, 369, 19241, 13, 198, 760]
+
+failures = []
+def check(name, ok, detail=""):
+    print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail else ""))
+    if not ok: failures.append(name)
+
+def post(body, timeout=600):
+    req = urllib.request.Request(BASE + "/v1/chat/completions", json.dumps(body).encode(), {"content-type": "application/json"})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+def get(path):
+    return json.load(urllib.request.urlopen(BASE + path, timeout=30))
+
+def main():
+    if not os.path.exists(BINARY): sys.exit(f"missing binary {BINARY}; run `swift build -c release --disable-sandbox`")
+    if not os.path.exists(ARTIFACT): sys.exit(f"missing artifact {ARTIFACT}; run `splosh convert`")
+
+    # 1. The engine reproduces the reference token ids straight from the artifact.
+    gen = subprocess.run([BINARY, "generate", "--prompt", REFERENCE_PROMPT, "--max-tokens", str(len(REFERENCE_IDS)), "--ids"],
+                         cwd=ROOT, capture_output=True, text=True, timeout=600)
+    match = re.search(r"generated ids: \[([0-9, ]*)\]", gen.stderr)
+    ids = [int(x) for x in match.group(1).split(",")] if match and match.group(1) else []
+    check("engine reproduces the MLX reference token ids", ids == REFERENCE_IDS, f"got {ids}")
+
+    # The prefix store goes to a scratch directory, with a threshold low enough for the test's
+    # prompts; everything else is the default configuration.
+    scratch = tempfile.mkdtemp(prefix="splosh-smoke-")
+    config = os.path.join(scratch, "splosh.toml")
+    with open(config, "w") as f:
+        f.write(f'prefixCacheDir = "{os.path.join(scratch, "prefix-cache")}"\nprefixCacheMinTokens = 128\nprefixCacheGiB = 2\n')
+
+    def start():
+        log = open("/tmp/splosh-smoke.log", "a")
+        process = subprocess.Popen([BINARY, "serve", "--port", str(PORT), "--config", config], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        for _ in range(240):
+            try:
+                urllib.request.urlopen(BASE + "/health", timeout=1); break
+            except Exception:
+                if process.poll() is not None: break
+                time.sleep(0.5)
+        return process
+
+    def stop(process):
+        process.send_signal(signal.SIGTERM)
+        try: process.wait(timeout=20)
+        except subprocess.TimeoutExpired: process.kill()
+
+    open("/tmp/splosh-smoke.log", "w").close()
+    server = start()
+    try:
+        check("server starts and answers /health", server.poll() is None)
+        if server.poll() is not None:
+            print(open("/tmp/splosh-smoke.log").read()); return
+
+        # 2. Startup reports the model's memory, and it matches the artifact.
+        startup = open("/tmp/splosh-smoke.log").read()
+        weights = re.search(r"weights\s+([0-9.]+) GiB", startup)
+        text_bytes = artifact_text_bytes()
+        reported = float(weights.group(1)) if weights else 0.0
+        expected = text_bytes / 2**30
+        check("startup reports weight memory matching the artifact", weights is not None and abs(reported - expected) < 0.05,
+              f"reported {reported:.2f} GiB, artifact text tensors {expected:.2f} GiB")
+        check("startup reports committed memory against the working set", "committed" in startup and "working set" in startup)
+
+        models = get("/v1/models")
+        model = models["data"][0]["id"]
+        check("/v1/models lists the model", bool(model) and models["data"][0]["context_length"] > 0, model)
+
+        # 3. Non-streaming completion: a real answer, not an echo of the prompt.
+        question = "What is the capital of France? Answer in one word."
+        reply = json.load(post({"model": model, "messages": [{"role": "user", "content": question}],
+                                "temperature": 0, "max_tokens": 64, "reasoning_effort": "none"}))
+        content = reply["choices"][0]["message"]["content"]
+        check("completion answers the question", "Paris" in content, repr(content))
+        check("completion is generated, not echoed", question not in content)
+        check("usage reports real token counts", reply["usage"]["prompt_tokens"] > 5 and reply["usage"]["completion_tokens"] >= 1)
+
+        # 4. Streaming: several content deltas arriving at different times, then [DONE].
+        arrivals, pieces, done = [], [], False
+        with post({"model": model, "messages": [{"role": "user", "content": "Count from one to sixty in words, comma separated."}],
+                   "temperature": 0, "max_tokens": 200, "stream": True, "reasoning_effort": "none",
+                   "stream_options": {"include_usage": True}}) as stream:
+            usage = None
+            for raw in stream:
+                line = raw.decode().strip()
+                if not line.startswith("data: "): continue
+                if line == "data: [DONE]": done = True; break
+                event = json.loads(line[6:])
+                if event.get("usage"): usage = event["usage"]
+                for choice in event.get("choices", []):
+                    piece = choice["delta"].get("content")
+                    if piece: pieces.append(piece); arrivals.append(time.time())
+        text = "".join(pieces)
+        check("stream delivers many separate content deltas", len(pieces) >= 8, f"{len(pieces)} deltas")
+        # A verify step delivers up to sixteen tokens at once, so what "over time" means is
+        # several separate bursts, not a gap between every pair of deltas.
+        bursts = 1 + sum(1 for a, b in zip(arrivals, arrivals[1:]) if b - a > 0.02)
+        check("stream deltas arrive over time, not in one burst", len(arrivals) >= 2 and bursts >= 4 and arrivals[-1] - arrivals[0] > 0.2,
+              f"{bursts} bursts over {arrivals[-1] - arrivals[0]:.2f}s" if arrivals else "")
+        check("streamed text is the model's answer", "three" in text.lower() and "twelve" in text.lower(), repr(text[:80]))
+        check("stream terminates with [DONE] and usage", done and usage is not None)
+
+        # 5. Prefix cache: a follow-up turn evaluates only the new tokens.
+        history = [{"role": "user", "content": "Remember the number 4182. " + "Here is some filler context. " * 40},
+                   {"role": "assistant", "content": "Understood."}]
+        first = json.load(post({"model": model, "messages": history + [{"role": "user", "content": "Say OK."}],
+                                "temperature": 0, "max_tokens": 8, "reasoning_effort": "none"}))
+        second = json.load(post({"model": model, "messages": history + [{"role": "user", "content": "Say OK."},
+                                 {"role": "assistant", "content": first["choices"][0]["message"]["content"]},
+                                 {"role": "user", "content": "What number did I ask you to remember?"}],
+                                 "temperature": 0, "max_tokens": 16, "reasoning_effort": "none"}))
+        cached = second["usage"]["prompt_tokens_details"]["cached_tokens"]
+        check("follow-up turn reuses the cached prefix", cached >= first["usage"]["prompt_tokens"] * 0.9,
+              f"{cached} of {second['usage']['prompt_tokens']} prompt tokens cached")
+        check("answer uses the cached context", "4182" in second["choices"][0]["message"]["content"])
+
+        # 6. Batching: concurrent sessions all complete and share forward passes.
+        steps_before = get("/v1/stats")["totals"]["steps"]
+        results = [None] * 4
+        def worker(i):
+            results[i] = json.load(post({"model": model, "messages": [{"role": "user", "content": f"Name one colour. Variant {i}."}],
+                                         "temperature": 0, "max_tokens": 24, "reasoning_effort": "none"}))
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        [t.start() for t in threads]; [t.join() for t in threads]
+        stats = get("/v1/stats")
+        tokens = sum(r["usage"]["completion_tokens"] for r in results)
+        steps = stats["totals"]["steps"] - steps_before
+        check("four concurrent sessions all complete", all(r and r["choices"][0]["message"]["content"] for r in results))
+        check("concurrent sessions share forward passes", steps < tokens + 4 * 2, f"{tokens} tokens in {steps} steps")
+
+        # 7. Stats expose memory and per-session accounting.
+        memory = stats["memory"]
+        check("/v1/stats reports weights, KV and working-set memory",
+              memory["weightBytes"] == text_resident(memory, text_bytes) and memory["deviceWorkingSetBytes"] > memory["weightBytes"] and memory["kvBytesUsed"] > 0,
+              f"weights {memory['weightBytes'] / 2**30:.2f} GiB, KV in use {memory['kvBytesUsed'] / 2**20:.0f} MiB")
+        check("/v1/stats lists cached prefixes", len(stats["cached"]) >= 1)
+        dashboard = urllib.request.urlopen(BASE + "/", timeout=10).read().decode()
+        check("dashboard is served at /", "<title>Splosh</title>" in dashboard)
+
+        # 7b. A harness may send a finished turn back without its thinking. The next prompt then
+        # parts from the last one a few tokens before its end (where the reply opens), and the
+        # conversation is carried on from there, not from somewhere far back.
+        opening = [{"role": "user", "content": "Remember the word heliotrope. " + "More filler context follows. " * 60},
+                   {"role": "assistant", "content": "Understood."}, {"role": "user", "content": "Reply with the single word OK."}]
+        thought = json.load(post({"model": model, "messages": opening, "temperature": 0, "max_tokens": 600}))
+        followup = json.load(post({"model": model, "messages": opening + [
+                                       {"role": "assistant", "content": thought["choices"][0]["message"]["content"] or "OK"},
+                                       {"role": "user", "content": "Which word was it? Reply with the word only."}],
+                                   "temperature": 0, "max_tokens": 600}))
+        kept = followup["usage"]["prompt_tokens_details"]["cached_tokens"]
+        check("a next turn sent without the last turn's thinking carries on from where that turn's reply opened",
+              kept >= thought["usage"]["prompt_tokens"] - 8, f"{kept} of {thought['usage']['prompt_tokens']} prompt tokens reused")
+        check("and still knows the conversation", "heliotrope" in (followup["choices"][0]["message"]["content"] or "").lower())
+
+        # 8. Prefix store: after a restart the same conversation is restored from disk.
+        for _ in range(40):
+            if get("/v1/stats").get("prefixStore", {}).get("entries", 0) >= 1: break
+            time.sleep(0.25)
+        check("prompt prefixes are written to disk", get("/v1/stats").get("prefixStore", {}).get("entries", 0) >= 1)
+        stop(server)
+        server = start()
+        check("server restarts", server.poll() is None)
+        # The conversation's next turn, as a client sends it: what was said so far, then a new
+        # message. (At a stop the store keeps each conversation as it stood at its last prompt,
+        # in place of the earlier turns' entries; a request that branched off before that turn
+        # would not find its beginning there.)
+        third = json.load(post({"model": model, "messages": history + [{"role": "user", "content": "Say OK."},
+                                {"role": "assistant", "content": first["choices"][0]["message"]["content"]},
+                                {"role": "user", "content": "What number did I ask you to remember?"},
+                                {"role": "assistant", "content": second["choices"][0]["message"]["content"]},
+                                {"role": "user", "content": "Which number was it? Reply with the number only."}],
+                                "temperature": 0, "max_tokens": 16, "reasoning_effort": "none"}))
+        restored = third["usage"]["prompt_tokens_details"]["cached_tokens"]
+        store = get("/v1/stats").get("prefixStore", {})
+        check("a restarted server restores the prefix from disk", restored >= first["usage"]["prompt_tokens"] * 0.9 and store.get("hits", 0) >= 1,
+              f"{restored} of {third['usage']['prompt_tokens']} prompt tokens restored")
+        check("answer after restore uses the restored context", "4182" in third["choices"][0]["message"]["content"])
+
+        # 9. More conversations than slots: one whose slot was given away comes back from disk
+        # whole, its last reply included, and carries on from there.
+        stop(server)
+        with open(config, "a") as f:
+            f.write("slots = 2\n")
+        server = start()
+
+        def opener(word):
+            return [{"role": "user", "content": f"Remember the word {word}. " + "This is filler for the test. " * 50},
+                    {"role": "assistant", "content": "Understood."}, {"role": "user", "content": "Reply with the single word OK."}]
+
+        def ask(messages):
+            return json.load(post({"model": model, "messages": messages, "temperature": 0, "max_tokens": 32, "reasoning_effort": "none"}))
+
+        first_turn = ask(opener("quince"))
+        for other in ("medlar", "damson", "sloe"):                     # three more conversations through two slots
+            ask(opener(other))
+        time.sleep(1.0)                                                # the store writes behind the scheduler
+        back = ask(opener("quince") + [{"role": "assistant", "content": first_turn["choices"][0]["message"]["content"]},
+                                       {"role": "user", "content": "Which word was it? Reply with the word only."}])
+        whole = first_turn["usage"]["prompt_tokens"] + first_turn["usage"]["completion_tokens"]
+        kept = back["usage"]["prompt_tokens_details"]["cached_tokens"]
+        check("a conversation whose slot was given away comes back from disk with its last reply",
+              kept >= whole - 2, f"{kept} tokens reused; its prompt and reply were {whole}")
+        check("and is still the same conversation", "quince" in back["choices"][0]["message"]["content"].lower())
+    finally:
+        stop(server)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+def artifact_text_bytes():
+    import struct
+    with open(ARTIFACT, "rb") as f:
+        f.read(8); length = struct.unpack("<Q", f.read(8))[0]
+        header = json.loads(f.read(length))
+    return sum(r["rawByteLength"] for r in header["tensorRecords"] if r["name"].startswith("language_model."))
+
+def text_resident(memory, text_bytes):
+    # Resident bytes are the text tensors plus page rounding and inter-tensor padding.
+    return memory["weightBytes"] if 0 <= memory["weightBytes"] - text_bytes < 64 * 2**20 else -1
+
+if __name__ == "__main__":
+    main()
+    print(f"\nserve-smoke: {'PASS' if not failures else 'FAIL (' + ', '.join(failures) + ')'}")
+    sys.exit(1 if failures else 0)

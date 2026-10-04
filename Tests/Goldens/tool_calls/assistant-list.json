@@ -1,0 +1,10 @@
+{
+  "tool_calls": [
+    {
+      "function": {
+        "name": "list",
+        "arguments": {"path": "Sources", "depth": 2, "hidden": false}
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+#!/bin/zsh
+# Engine step timings for alternative settings, interleaved so drift in the machine's state
+# (heat, other load) hits every variant alike. Each variant is a quoted list of environment
+# assignments; "X=1" is the unmodified engine.
+#
+#   tools/bench/step-bench <context> "X=1" "SPLOSH_DEFER_NORM=0" ...
+#
+#   ROUNDS=3      rounds; the best of each variant is kept
+#   SUSTAINED=1   14 consecutive iterations per run with the first four dropped (the GPU is
+#                 about a third faster for the first second after idling); otherwise the
+#                 median of five, which is the burst figure
+#
+# Prints the 128-row prefill step and the 8-row verify step at that context length.
+cd "$(dirname "$0")/../.."
+ctx=$1; shift
+typeset -A bp bv
+for v in "$@"; do bp[$v]=99999; bv[$v]=99999; done
+iterations=${SUSTAINED:+14}
+for round in $(seq 1 ${ROUNDS:-3}); do
+  for v in "$@"; do
+    line=$(env ${(z)v} ${iterations:+SPLOSH_CTXBENCH_ITERATIONS=$iterations} SPLOSH_CTXBENCH=$ctx .build/release/splosh generate --prompt x 2>&1 | grep -E "^context")
+    pval=$(echo $line | sed -E 's/.*rows\) ([0-9]+) ms =.*/\1/'); vval=$(echo $line | sed -E 's/.*verify step \([0-9]+ rows\) ([0-9.]+) ms.*/\1/')
+    [[ "$pval" == <-> ]] || { echo "$v: failed: $line"; continue; }
+    (( pval < bp[$v] )) && bp[$v]=$pval; (( vval < bv[$v] )) && bv[$v]=$vval
+  done
+done
+for v in "$@"; do printf "%-36s ctx %6d: prefill %4d ms (%3.0f tok/s)  verify %.1f ms\n" $v $ctx $bp[$v] $((128000.0/bp[$v])) $bv[$v]; done

@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Splish, Splash and Splosh: one long prompt at a time (10K, 50K, 150K, 200K) and four 20K
+prompts at once, each answered at length so that decode speed is measured over many tokens.
+
+    tools/bench/engine-report [engines, comma-separated, default splash,splosh,splish] [tag]
+    tools/bench/engine-report-summary <tag> [<tag> ...]
+
+Splish runs from the upstream clone at O below (a session scratchpad: point it at your clone).
+Logs and results go to .build/engine-report/. Results of 2026-10-03: audit/snapshots/ and
+audit/SPEED-PLAN-RESULTS.md.
+
+Each engine is started alone (two do not fit in memory), sent a ~20K-token warm-up prompt (the
+first long prompt after a start runs slower), then the measured requests. Every prompt is new
+(its own seed), so no engine's prefix cache helps it. Greedy, thinking off, 1,000 tokens asked
+for and 800 allowed, so every engine stops at the cap and decodes the same number of tokens.
+Results go to report-<tag>.jsonl, one line per request or batch.
+"""
+import json, os, subprocess, sys, threading, time, urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+S = ROOT + "/.build/engine-report/"
+os.makedirs(S, exist_ok=True)
+O = "/private/tmp/claude-501/-Users-andrewellis-Documents-Development-Splosh/f48dd602-4a36-479e-8c49-b6905a9ce34b/scratchpad/"
+src = open(ROOT + "/tools/bench/server-ab").read().split("parser = argparse")[0]
+ns = {}; exec(src, ns)
+records = ns["records"]
+ANSWER = 800
+
+open(S + "report-splosh.toml", "w").write('prefixCacheDir = "none"\nport = 8792\n')
+SERVERS = {
+    "splish": (8801, [O + "splish-upstream/splish", "serve", "--model", "incoai/Qwen3.8-27B-Splash", "--port", "8801"], O + "splish-upstream"),
+    "splash": (8801, ["splash", "serve", "--model", "incoai/Qwen3.8-27B-Splash", "--port", "8801"], O),
+    "splosh": (8792, [ROOT + "/.build/release/splosh", "serve", "--port", "8792", "--config", S + "report-splosh.toml"], ROOT),
+}
+
+def stop_all():
+    # Splash's Python parent first, or it restarts its engine (see splosh-benchmark-method).
+    for pattern in ("splish-upstream/install/launch" + "er.py", "spl" + "ash.*server.py", "splish-upstream/build/spl" + "ash",
+                    "spl" + "ash serve", "serve-nat" + "ive", "splo" + "sh serve --port 8792"):
+        subprocess.run(["pkill", "-f", pattern]); time.sleep(0.5)
+    time.sleep(8)
+
+def wait(port, proc):
+    for _ in range(1200):
+        try: return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=5))["data"][0]["id"]
+        except Exception:
+            if proc.poll() is not None: raise SystemExit(f"server exited {proc.returncode}")
+            time.sleep(1)
+    raise SystemExit("server did not come up")
+
+def ask(port, model, prompt, max_tokens):
+    """Stream one request: (prompt tokens, completion tokens, seconds to first token, decode
+    seconds from first to last token, total seconds), or an error string."""
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0, "max_tokens": max_tokens,
+            "reasoning_effort": "none", "stream": True, "stream_options": {"include_usage": True}}
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", json.dumps(body).encode(), {"content-type": "application/json"})
+    start, first, last, usage, deltas = time.time(), None, None, None, 0
+    try:
+        with urllib.request.urlopen(request, timeout=7200) as response:
+            for line in response:
+                line = line.decode().strip()
+                if not line.startswith("data:") or line[5:].strip() == "[DONE]": continue
+                event = json.loads(line[5:])
+                if "error" in event: return f"error: {event['error']}"
+                usage = event.get("usage") or usage
+                for choice in event.get("choices", []):
+                    delta = choice.get("delta", {})
+                    if delta.get("content") or delta.get("reasoning_content"):
+                        last = time.time(); first = first or last; deltas += 1
+    except Exception as error:
+        detail = error.read().decode()[:300] if hasattr(error, "read") else str(error)
+        return f"error: {detail}"
+    if not usage or first is None: return "error: no usage or no tokens"
+    return {"prompt": usage["prompt_tokens"], "completion": usage["completion_tokens"], "ttft": first - start,
+            "decode": last - first, "total": time.time() - start}
+
+def long_prompt(size, seed):
+    return (f"Archive {seed}.\n" + records(size // 27, seed) +
+            "\n\nThe records above are background only. Now write a 1,000-word essay on the history and methods of land surveying, "
+            "with an introduction, several sections and a conclusion.")
+
+def main():
+    engines = (sys.argv[1] if len(sys.argv) > 1 else "splash,splosh,splish").split(",")
+    tag = sys.argv[2] if len(sys.argv) > 2 else time.strftime("%H%M")
+    out = open(S + f"report-{tag}.jsonl", "a")
+    def record(entry):
+        out.write(json.dumps(entry) + "\n"); out.flush(); print(json.dumps(entry), flush=True)
+    base = int(time.time()) % 10000 * 10
+    for index, name in enumerate(engines):
+        port, command, cwd = SERVERS[name]
+        stop_all()
+        log = open(S + f"report-{tag}-{name}.log", "w")
+        started = time.time()
+        proc = subprocess.Popen(command, stdout=log, stderr=log, cwd=cwd)
+        try:
+            model = wait(port, proc)
+            record({"engine": name, "event": "loaded", "seconds": time.time() - started})
+            ask(port, model, "Say hello.", 16)
+            warm = ask(port, model, long_prompt(20000, base + 900 + index), 32)
+            record({"engine": name, "test": "warm-up 20K", "result": warm})
+            for size in (10000, 50000, 150000, 200000):
+                result = ask(port, model, long_prompt(size, base + size // 1000 + 100 * index), ANSWER)
+                record({"engine": name, "test": f"single {size // 1000}K", "result": result})
+            # Four 20K prompts at once.
+            results = [None] * 4
+            def worker(slot):
+                results[slot] = ask(port, model, long_prompt(20000, base + 500 + 10 * index + slot), ANSWER)
+            begin = time.time()
+            threads = [threading.Thread(target=worker, args=(slot,)) for slot in range(4)]
+            for thread in threads: thread.start()
+            for thread in threads: thread.join()
+            record({"engine": name, "test": "4 x 20K", "begin": begin, "results": results})
+        finally:
+            proc.terminate()
+            try: proc.wait(timeout=300)
+            except Exception: proc.kill()
+            log.close()
+            stop_all()
+
+main()

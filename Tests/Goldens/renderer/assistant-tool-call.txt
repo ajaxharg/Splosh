@@ -1,0 +1,17 @@
+<|im_start|>user
+List files<|im_end|>
+<|im_start|>assistant
+<tool_call>
+<function=list>
+<parameter=path>
+Sources
+</parameter>
+<parameter=depth>
+2
+</parameter>
+<parameter=hidden>
+false
+</parameter>
+</function>
+</tool_call>
+<|im_end|>

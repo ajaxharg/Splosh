@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Restart the engine under load, without the model, and check that no client can tell.
+
+`splosh serve --echo` is the real server (the process that holds the port, the engine child
+on its private socket, the same HTTP layer) with a stand-in for the model that says a message
+back a word at a time. This starts one, restarts its engine while a slow reply is in flight,
+and checks that:
+
+  - the reply in flight arrives whole;
+  - a request sent during the restart, a large one, is kept and answered by the new engine;
+  - nothing is refused at any point (a poller connects throughout);
+  - the engine really was replaced;
+  - a stop ends both processes and frees the port;
+  - a server of the older one-process kind can be replaced by a new one (`--takeover`) with
+    its reply in flight finished and (but for the instant the port changes hands) nothing
+    refused;
+  - a request the engine had not begun to answer when it was cut, or when it died, is given
+    to the next engine; a client that half-closes its connection still gets its reply.
+
+usage: tools/restart-smoke [path to splosh]     (default .build/release/splosh)
+"""
+import http.client, json, os, signal, socket, subprocess, sys, threading, time
+
+BINARY = sys.argv[1] if len(sys.argv) > 1 else ".build/release/splosh"
+failures = []
+
+
+def check(ok, what):
+    print(("ok    " if ok else "FAIL  ") + what)
+    if not ok:
+        failures.append(what)
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def chat(port, text, timeout=60):
+    """One streamed chat request. Returns the words said back and whether the stream closed properly."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    body = json.dumps({"model": "m", "stream": True, "messages": [{"role": "user", "content": text}]})
+    connection.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
+    response = connection.getresponse()
+    said, done = "", False
+    for raw in response.read().decode().splitlines():
+        if raw.startswith("data: [DONE]"):
+            done = True
+        elif raw.startswith("data: "):
+            for choice in json.loads(raw[6:]).get("choices", []):
+                said += choice.get("delta", {}).get("content") or ""
+    connection.close()
+    return response.status, said, done
+
+
+def healthy(port):
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        connection.request("GET", "/health")
+        ok = connection.getresponse().status == 200
+        connection.close()
+        return ok
+    except OSError:
+        return False
+
+
+def engine_of(pid):
+    out = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+    return int(out[0]) if out else None
+
+
+def main():
+    port = free_port()
+    environment = dict(os.environ, SPLOSH_ECHO_INTERVAL_MS="100")
+    server = subprocess.Popen([BINARY, "serve", "--echo", "--port", str(port)], env=environment,
+                              stderr=subprocess.PIPE, text=True)
+    log = []
+    threading.Thread(target=lambda: log.extend(iter(server.stderr.readline, "")), daemon=True).start()
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and not healthy(port):
+            time.sleep(0.1)
+        check(healthy(port), "the server answers on its port")
+        first_engine = engine_of(server.pid)
+        check(first_engine is not None, "the engine runs as a child of the process that holds the port")
+
+        # A poller that connects all the way through: a refused connection is what a harness
+        # would see as the server having gone.
+        refused, polls, polling = [], [0], [True]
+
+        def poll():
+            while polling[0]:
+                started = time.time()
+                if not healthy(port):
+                    refused.append(started)
+                polls[0] += 1
+                time.sleep(0.05)
+
+        threading.Thread(target=poll, daemon=True).start()
+
+        slow = " ".join(f"w{i}" for i in range(40))                  # four seconds of reply
+        results = {}
+        in_flight = threading.Thread(target=lambda: results.update(slow=(chat(port, slow), time.time())))
+        in_flight.start()
+        time.sleep(0.6)
+
+        asked = subprocess.run([BINARY, "serve", "--restart", "--port", str(port)], capture_output=True, text=True)
+        check(asked.returncode == 0, "`serve --restart` finds the server and asks it")
+        restart_at = time.time()
+        time.sleep(0.2)
+        big = "x" * 200_000                                           # larger than a socket buffer
+        waiting = threading.Thread(target=lambda: results.update(big=(chat(port, big), time.time())))
+        waiting.start()
+
+        in_flight.join(60)
+        waiting.join(60)
+        (status, said, done), slow_end = results.get("slow", ((None, "", False), 0))
+        check(status == 200 and said.split() == slow.split() and done, "the reply in flight arrived whole")
+        check(slow_end - restart_at > 2, "and it was still going when the restart was asked for")
+        (status, said, done), big_end = results.get("big", ((None, "", False), 0))
+        check(status == 200 and said.strip() == big and done, "a request sent during the restart was answered in full")
+        check(big_end >= slow_end, "and only once the old engine had finished")
+
+        deadline = time.time() + 20
+        while time.time() < deadline and engine_of(server.pid) in (None, first_engine):
+            time.sleep(0.1)
+        second_engine = engine_of(server.pid)
+        check(second_engine not in (None, first_engine), "the engine was replaced")
+        time.sleep(0.5)
+        polling[0] = False
+        time.sleep(0.2)
+        check(not refused and polls[0] > 20, f"nothing was refused ({polls[0]} connections throughout)")
+        check(any("restarted in" in line for line in log), "the server reported the restart")
+
+        status, said, done = chat(port, "after the restart")
+        check(status == 200 and said.split() == ["after", "the", "restart"] and done, "the new engine serves")
+
+        server.send_signal(signal.SIGINT)
+        code = server.wait(20)
+        check(code == 0, f"a stop ends the server (exit {code})")
+        time.sleep(0.3)
+        check(engine_gone(second_engine), "and its engine")
+        check(not healthy(port), "and frees the port")
+    finally:
+        if server.poll() is None:
+            server.kill()
+    if failures:
+        print("\nserver output:\n" + "".join(log))
+        sys.exit(1)
+    takeover()
+    interruptions()
+    if failures:
+        sys.exit(1)
+    print("restart-smoke: all passed")
+
+
+def takeover():
+    """A server of the older, one-process kind is replaced by a new one started with --takeover."""
+    print("-- takeover")
+    port = free_port()
+    environment = dict(os.environ, SPLOSH_ECHO_INTERVAL_MS="100")
+    old = subprocess.Popen([BINARY, "serve", "--echo", "--port", str(port)], env=dict(environment, SPLOSH_SERVE_DIRECT="1"),
+                           stderr=subprocess.DEVNULL)
+    new = None
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and not healthy(port):
+            time.sleep(0.1)
+        check(healthy(port), "the old server answers")
+        refused, polls, polling = [], [0], [True]
+
+        def poll():
+            while polling[0]:
+                if not healthy(port):
+                    refused.append(time.time())
+                polls[0] += 1
+                time.sleep(0.02)
+
+        slow = " ".join(f"w{i}" for i in range(40))
+        results = {}
+        in_flight = threading.Thread(target=lambda: results.update(slow=chat(port, slow)))
+        in_flight.start()
+        time.sleep(0.6)
+        threading.Thread(target=poll, daemon=True).start()
+        new = subprocess.Popen([BINARY, "serve", "--echo", "--port", str(port), "--takeover"], env=environment,
+                               stderr=subprocess.PIPE, text=True)
+        log = []
+        threading.Thread(target=lambda: log.extend(iter(new.stderr.readline, "")), daemon=True).start()
+        deadline = time.time() + 10
+        while time.time() < deadline and not any("taking over" in line for line in log):
+            time.sleep(0.02)
+        time.sleep(0.3)                                               # the port has changed hands
+        def held():
+            try:
+                results.update(next=chat(port, "held for the new server"))
+            except Exception as error:                                # shown by the check below
+                results.update(next=(type(error).__name__, str(error), False))
+
+        waiting = threading.Thread(target=held)
+        waiting.start()
+        in_flight.join(60)
+        waiting.join(60)
+        status, said, done = results.get("slow", (None, "", False))
+        check(status == 200 and said.split() == slow.split() and done, "the old server's reply in flight arrived whole")
+        status, said, done = results.get("next", (None, "", False))
+        check(status == 200 and said.split() == ["held", "for", "the", "new", "server"] and done,
+              f"a request sent during the takeover was answered ({status}, {said[:60]!r}, {done})")
+        check(old.wait(20) == 0, "the old server stopped")
+        time.sleep(0.5)
+        polling[0] = False
+        time.sleep(0.2)
+        # The old server closes its listener and this one binds the port: a few milliseconds
+        # in which a connection is refused. One built since holds the port itself and has none.
+        check(len(refused) <= 2 and polls[0] > 10, f"connections refused as the port changed hands: {len(refused)} of {polls[0]}")
+        check(engine_of(new.pid) is not None and healthy(port), "the new server holds the port")
+        new.send_signal(signal.SIGINT)
+        check(new.wait(20) == 0, "and stops when asked")
+        if failures:
+            print("\nnew server output:\n" + "".join(log))
+    finally:
+        for process in (old, new):
+            if process is not None and process.poll() is None:
+                process.kill()
+
+
+def interruptions():
+    """Requests the engine did not get to answer: cut by a restart, lost to a crash, half-closed."""
+    print("-- interruptions")
+    import tempfile
+    port = free_port()
+    with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as config:
+        config.write("restartDrainSeconds = 1\n")
+    server = subprocess.Popen([BINARY, "serve", "--echo", "--port", str(port), "--config", config.name],
+                              env=dict(os.environ, SPLOSH_ECHO_INTERVAL_MS="100"), stderr=subprocess.PIPE, text=True)
+    log = []
+    threading.Thread(target=lambda: log.extend(iter(server.stderr.readline, "")), daemon=True).start()
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and not healthy(port):
+            time.sleep(0.1)
+
+        # A client that says it has finished sending (as `nc` does) still gets its reply.
+        body = json.dumps({"model": "m", "stream": True, "messages": [{"role": "user", "content": "a b c"}]})
+        with socket.create_connection(("127.0.0.1", port), timeout=20) as raw:
+            raw.sendall((f"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                         f"Content-Length: {len(body)}\r\n\r\n{body}").encode())
+            raw.shutdown(socket.SHUT_WR)
+            reply = b""
+            while chunk := raw.recv(65536):
+                reply += chunk
+        check(b"[DONE]" in reply and reply.count(b'"content"') == 3, "a client that half-closes after its request gets the reply")
+
+        # A reply longer than the restart allows is cut; the engine had not begun to answer
+        # it, so it is given to the new engine and the client never knows.
+        long = " ".join(f"w{i}" for i in range(50))                  # five seconds; the restart allows one
+        first_engine = engine_of(server.pid)
+        started = time.time()
+        results = {}
+        cut = threading.Thread(target=lambda: results.update(cut=chat(port, long)))
+        cut.start()
+        time.sleep(0.5)
+        subprocess.run([BINARY, "serve", "--restart", "--port", str(port)], capture_output=True)
+        cut.join(60)
+        status, said, done = results.get("cut", (None, "", False))
+        check(status == 200 and said.split() == long.split() and done, "a request cut by a restart is answered by the new engine")
+        check(time.time() - started > 6 and engine_of(server.pid) not in (None, first_engine), "and it was the new engine that answered")
+        check(any("ending the requests still running" in line for line in log), "after the time the restart allows")
+
+        # The engine dies with a request in hand: a new one is started and given the request.
+        doomed = engine_of(server.pid)
+        lost = threading.Thread(target=lambda: results.update(lost=chat(port, long)))
+        lost.start()
+        time.sleep(1.0)
+        os.kill(doomed, signal.SIGKILL)
+        lost.join(60)
+        status, said, done = results.get("lost", (None, "", False))
+        check(status == 200 and said.split() == long.split() and done, "a request the engine died holding is answered by its replacement")
+        check(engine_of(server.pid) not in (None, doomed), "which was started without being asked")
+
+        # A stop while a restart is under way ends the server once the engine has finished.
+        subprocess.run([BINARY, "serve", "--restart", "--port", str(port)], capture_output=True)
+        time.sleep(0.05)
+        server.send_signal(signal.SIGTERM)
+        check(server.wait(20) == 0, "a stop during a restart ends the server")
+        time.sleep(0.3)
+        check(not healthy(port), "and frees the port")
+    finally:
+        if server.poll() is None:
+            server.kill()
+        os.unlink(config.name)
+    if failures:
+        print("\nserver output:\n" + "".join(log))
+
+
+def engine_gone(pid):
+    try:
+        os.kill(pid, 0)
+        return False
+    except OSError:
+        return True
+
+
+if __name__ == "__main__":
+    main()

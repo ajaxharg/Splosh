@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""Switch between registered models under load, without the models, and check what clients see.
+
+`splosh serve --echo` is the real server (the process that holds the port, the engine child
+on its private socket, the same HTTP layer) with a stand-in for the model. With models
+registered in its config it "loads" one of them as the real engine does, as far as the plumbing
+can tell: the artifact has to be there (dummy files here), loading takes SPLOSH_ECHO_LOAD_MS, and
+the model SPLOSH_ECHO_FAIL_MODEL names does not load. This starts such servers and checks that:
+
+  - the models are listed, by the server and by `splosh models`, the loaded one marked;
+  - a request naming no registered model is answered by whichever is loaded;
+  - a request naming a registered model that is not loaded has it loaded, and is answered by it;
+  - a slow reply in flight when another model is asked for arrives whole, and requests that
+    arrive meanwhile wait and are answered by the new model;
+  - a second request on a connection the client has kept open is treated as a first one is;
+  - a model whose requests do not finish in time is kept: the request for the other is refused
+    with 503 and Retry-After, and the loaded model's own requests are answered;
+  - a registered model with no artifact is 404, and nothing is replaced;
+  - a model that does not load, or never comes up, is 503, and the one before it is loaded again;
+  - `splosh models --load` loads a model, and is the only thing that does in manual mode (409);
+  - a load posted as the settings page and the dashboard post it (JSON, from the server's own origin)
+    answers when the model is loaded and has it first in the list; from another origin it is refused;
+    a model that is missing, or does not load, is refused with the message the pages show;
+  - a restart, and an engine that dies, keep the model that was loaded;
+  - a model just loaded keeps its turn for the dwell, two clients of two models both get on
+    with nothing refused, and a third model asked for takes the turn after.
+
+usage: tools/switch-smoke [path to splosh]     (default .build/release/splosh)
+"""
+import http.client, json, os, shutil, signal, socket, subprocess, sys, tempfile, threading, time
+
+BINARY = sys.argv[1] if len(sys.argv) > 1 else ".build/release/splosh"
+SIZES = {"a": 1000, "b": 2000, "c": 3000, "bad": 400, "slow": 500}       # "gone" has no artifact
+failures = []
+
+
+def check(ok, what):
+    print(("ok    " if ok else "FAIL  ") + what)
+    if not ok:
+        failures.append(what)
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def chat(port, text, model, timeout=60):
+    """One streamed chat request: status, the model that answered, the words said back, whether
+    the stream closed properly, the error code of a refusal, the Retry-After header, how long it took."""
+    started = time.time()
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    body = json.dumps({"model": model, "stream": True, "messages": [{"role": "user", "content": text}]})
+    connection.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
+    response = connection.getresponse()
+    raw = response.read().decode()
+    connection.close()
+    said, done, code = "", False, None
+    if response.status == 200:
+        for line in raw.splitlines():
+            if line.startswith("data: [DONE]"):
+                done = True
+            elif line.startswith("data: "):
+                for choice in json.loads(line[6:]).get("choices", []):
+                    said += choice.get("delta", {}).get("content") or ""
+    else:
+        try:
+            code = json.loads(raw)["error"]["code"]
+        except (ValueError, KeyError, TypeError):
+            code = raw[:80]
+    return {"status": response.status, "by": response.getheader("x-splosh-model"), "said": said.split(), "done": done,
+            "code": code, "retry": response.getheader("Retry-After"), "took": time.time() - started, "ended": time.time(),
+            "marker": response.getheader("x-splosh-switch")}
+
+
+def get(port, path, timeout=30):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    connection.request("GET", path)
+    response = connection.getresponse()
+    data = response.read()
+    connection.close()
+    return response.status, data
+
+
+def models(port):
+    return json.loads(get(port, "/v1/models")[1])
+
+
+def post_load(port, model, origin=None, timeout=120):
+    """What the settings page and the dashboard send: POST /v1/models/load, JSON, from the origin the page was served from.
+    Returns the status and the error message of a refusal, which is what the pages show (None for an answer that is not one)."""
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    headers = {"Content-Type": "application/json"}
+    if origin:
+        headers["Origin"] = origin
+    connection.request("POST", "/v1/models/load", json.dumps({"model": model}), headers)
+    response = connection.getresponse()
+    body = json.loads(response.read().decode() or "null")
+    connection.close()
+    error = body.get("error") if isinstance(body, dict) else None
+    return response.status, body, error.get("message") if isinstance(error, dict) else error
+
+
+def healthy(port):
+    try:
+        return get(port, "/health")[0] == 200
+    except OSError:
+        return False
+
+
+def engine_of(pid):
+    out = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
+    return int(out[0]) if out else None
+
+
+def cli(*arguments):
+    return subprocess.run([BINARY, *arguments], capture_output=True, text=True, timeout=120)
+
+
+class Server:
+    """A `splosh serve --echo` with models registered, for as long as the `with` lasts."""
+
+    def __init__(self, directory, name, settings, start=None):
+        self.port = free_port()
+        self.config = os.path.join(directory, name + ".toml")
+        lines = [f'model.{model} = "{os.path.join(directory, model + ".splw")}"' for model in ("a", "b", "c", "gone", "bad", "slow")]
+        with open(self.config, "w") as file:
+            file.write("\n".join(lines + settings) + "\n")
+        self.arguments = ["serve", "--echo", "--port", str(self.port), "--config", self.config] + (["--model", start] if start else [])
+        self.log = []
+
+    def __enter__(self):
+        environment = dict(os.environ, SPLOSH_ECHO_INTERVAL_MS="100", SPLOSH_ECHO_LOAD_MS="300,slow=60000",
+                           SPLOSH_ECHO_FAIL_MODEL="bad", SPLOSH_LOAD_SECONDS="2")
+        environment.pop("SPLOSH_MODEL", None)
+        self.process = subprocess.Popen([BINARY] + self.arguments, env=environment, stderr=subprocess.PIPE, text=True)
+        threading.Thread(target=lambda: self.log.extend(iter(self.process.stderr.readline, "")), daemon=True).start()
+        deadline = time.time() + 20
+        while time.time() < deadline and not healthy(self.port):
+            time.sleep(0.1)
+        return self
+
+    def __exit__(self, *_):
+        if self.process.poll() is None:
+            self.process.send_signal(signal.SIGINT)
+            try:
+                self.process.wait(20)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        if failures:
+            print("\nserver output:\n" + "".join(self.log))
+
+    def said(self, text):
+        return any(text in line for line in self.log)
+
+    def engine(self):
+        return engine_of(self.process.pid)
+
+    def loaded(self):
+        return models(self.port)["loaded"]
+
+
+def later(delay, results, key, call):
+    """Run `call` after `delay` seconds on a thread of its own, its result under `key`."""
+    def run():
+        time.sleep(delay)
+        try:
+            results[key] = call()
+        except Exception as error:                                    # shown by the check that reads it
+            results[key] = {"status": type(error).__name__, "by": None, "said": [], "done": False, "code": str(error),
+                            "retry": None, "took": 0, "ended": time.time(), "marker": None}
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread
+
+
+def switching(directory):
+    """One server, no dwell: listing, switches idle and under load, the refusals, the failures."""
+    with Server(directory, "switching", ["model = \"a\"", "modelDwellSeconds = 0", "switchWaitSeconds = 5"]) as server:
+        port = server.port
+        check(healthy(port), "the server answers on its port")
+
+        # A poller that connects all the way through: nothing is refused while models change.
+        refused, polls, polling = [], [0], [True]
+
+        def poll():
+            while polling[0]:
+                if not healthy(port):
+                    refused.append(time.time())
+                polls[0] += 1
+                time.sleep(0.05)
+
+        threading.Thread(target=poll, daemon=True).start()
+
+        # Listing.
+        listed = models(port)
+        data = {model["id"]: model for model in listed["data"]}
+        check(listed["object"] == "list" and [model["id"] for model in listed["data"]] == ["a", "b", "c", "gone", "bad", "slow"],
+              "the models are listed in the order the config registers them (the loaded one, a, being first of them)")
+        check(all(model["object"] == "model" and model["owned_by"] == "splosh" and isinstance(model["created"], int) for model in listed["data"]),
+              "each as an OpenAI model object")
+        check(listed["loaded"] == "a" and [model["id"] for model in listed["data"] if model["loaded"]] == ["a"], "the starting model is the one loaded")
+        check(data["a"]["state"] == "loaded" and data["b"]["state"] == "available" and data["gone"]["state"] == "missing",
+              "with its state: loaded, available, missing")
+        check(data["b"]["size_bytes"] == SIZES["b"] and data["gone"]["size_bytes"] is None and data["b"]["path"].endswith("b.splw"),
+              "and its artifact's path and size")
+        check(listed["switch"] == {"mode": "request", "target": None, "phase": None, "parked": 0}, "and no switch in hand, with switching on request on")
+        one = json.loads(get(port, "/v1/models/b")[1])
+        other = json.loads(get(port, "/v1/models/qwen3.8-27b")[1])
+        check(one["id"] == "b" and one["state"] == "available" and other["id"] == "a", "one model is its own object; an unregistered name is the loaded model's")
+        shown = cli("models", "--port", str(port), "--config", server.config)
+        rows = shown.stdout.splitlines()
+        check(shown.returncode == 0 and any(row.startswith("* a ") and "loaded" in row for row in rows)
+              and any(row.startswith("  gone ") and "missing" in row for row in rows) and "switching on request: on" in shown.stdout,
+              "`splosh models` prints them, the loaded one marked")
+        as_json = cli("models", "--json", "--port", str(port), "--config", server.config)
+        check(as_json.returncode == 0 and json.loads(as_json.stdout)["loaded"] == "a", "and gives the server's own list with --json")
+
+        # A name that is not registered.
+        first = server.engine()
+        reply = chat(port, "any name will do", "qwen3.8-27b")
+        check(reply["status"] == 200 and reply["by"] == "a" and reply["said"] == ["any", "name", "will", "do"] and reply["done"],
+              "a request naming no registered model is answered by the loaded one")
+        check(server.engine() == first, "with the engine left as it was")
+
+        # A switch when idle.
+        reply = chat(port, "to the other", "b")
+        check(reply["status"] == 200 and reply["by"] == "b" and reply["said"] == ["to", "the", "other"] and reply["done"] and reply["marker"] is None,
+              f"a request naming another model is answered by it ({reply['status']}, by {reply['by']}, in {reply['took']:.1f} s)")
+        second = server.engine()
+        check(second not in (None, first) and server.loaded() == "b", "which a new engine has loaded")
+        check(server.said("switched to b in"), "and the server reported the switch")
+
+        # A slow reply in flight when another model is asked for; arrivals behind it.
+        slow = " ".join(f"w{i}" for i in range(30))                  # three seconds of reply
+        results = {}
+        threads = [later(0, results, "slow", lambda: chat(port, slow, "b")),
+                   later(0.5, results, "wanted", lambda: chat(port, "back again", "a")),
+                   later(1.0, results, "behind", lambda: chat(port, "behind the barrier", "qwen3.8-27b"))]
+        time.sleep(1.5)
+        during = models(port)
+        check(during["loaded"] == "b" and during["switch"]["target"] == "a" and during["switch"]["phase"] == "waiting" and during["switch"]["parked"] == 1,
+              f"while it waits, the list says a switch is in hand ({during['switch']})")
+        waiting = cli("models", "--port", str(port), "--config", server.config)
+        check("switching to a:" in waiting.stdout and "1 request kept" in waiting.stdout, "and so does `splosh models`")
+        for thread in threads:
+            thread.join(60)
+        reply = results["slow"]
+        check(reply["status"] == 200 and reply["by"] == "b" and reply["said"] == slow.split() and reply["done"], "the reply in flight arrived whole, from the model it asked for")
+        wanted = results["wanted"]
+        check(wanted["status"] == 200 and wanted["by"] == "a" and wanted["said"] == ["back", "again"] and wanted["done"],
+              f"the request for the other model was answered by it ({wanted['status']}, by {wanted['by']})")
+        check(wanted["ended"] >= reply["ended"], "and only once the reply in flight had finished")
+        behind = results["behind"]
+        check(behind["status"] == 200 and behind["by"] == "a" and behind["said"] == ["behind", "the", "barrier"] and behind["ended"] >= reply["ended"],
+              f"a request that arrived meanwhile waited, and was answered by the new model ({behind['status']}, by {behind['by']})")
+        third = server.engine()
+        check(third not in (None, second) and server.loaded() == "a", "which a new engine has loaded")
+
+        # A client that goes on using a connection it was asked to use once: its second request,
+        # for the other model, is kept and answered like any other, and it never sees the marker.
+        def framed(model, text):
+            body = json.dumps({"model": model, "stream": True, "messages": [{"role": "user", "content": text}]})
+            return (f"POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n\r\n{body}").encode()
+
+        def answer(raw):
+            data = b""
+            while not data.endswith(b"\r\n0\r\n\r\n"):                 # the last chunk of a reply sent in chunks
+                chunk = raw.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            return data
+
+        with socket.create_connection(("127.0.0.1", port), timeout=30) as raw:
+            raw.sendall(framed("a", "first on the connection"))
+            one = answer(raw)
+            raw.sendall(framed("b", "second on the connection"))
+            two = answer(raw)
+        check(one.startswith(b"HTTP/1.1 200 ") and b"x-splosh-model: a" in one.lower() and one.count(b'"content"') == 4,
+              "a client that keeps its connection gets its first reply")
+        check(two.startswith(b"HTTP/1.1 200 ") and b"x-splosh-model: b" in two.lower() and two.count(b'"content"') == 4 and server.loaded() == "b",
+              f"and its second, for another model, from that model ({two.split(chr(13).encode())[0].decode() if two else 'nothing'})")
+        reply = chat(port, "and back", "a")
+        check(reply["status"] == 200 and reply["by"] == "a", "(and back to the first for what follows)")
+        third = server.engine()
+
+        # A model that stays busy: the request for the other is refused, its own are not harmed.
+        long = " ".join(f"w{i}" for i in range(80))                  # eight seconds; a request may wait five
+        results = {}
+        threads = [later(0, results, "long", lambda: chat(port, long, "a")),
+                   later(0.5, results, "wanted", lambda: chat(port, "no room", "b")),
+                   later(1.5, results, "own", lambda: chat(port, "one of its own", "a"))]
+        for thread in threads:
+            thread.join(60)
+        wanted = results["wanted"]
+        check(wanted["status"] == 503 and wanted["code"] == "model_busy" and wanted["retry"] is not None and 4.5 < wanted["took"] < 6.5,
+              f"a request for another model is refused once it has waited its time ({wanted['status']} {wanted['code']}, Retry-After {wanted['retry']}, after {wanted['took']:.1f} s)")
+        reply = results["long"]
+        check(reply["status"] == 200 and reply["by"] == "a" and reply["said"] == long.split() and reply["done"], "the busy model's reply in flight arrived whole")
+        own = results["own"]
+        check(own["status"] == 200 and own["by"] == "a" and own["said"] == ["one", "of", "its", "own"] and own["done"] and own["ended"] < reply["ended"],
+              f"and a request of its own that arrived meanwhile was answered by it ({own['status']}, by {own['by']}, after {own['took']:.1f} s)")
+        check(server.engine() == third and server.loaded() == "a", "with the engine left as it was")
+
+        # A registered model with no artifact.
+        reply = chat(port, "nothing there", "gone")
+        check(reply["status"] == 404 and reply["code"] == "model_not_found" and reply["by"] == "a", f"a model with no artifact is not found ({reply['status']} {reply['code']})")
+        check(server.engine() == third and server.loaded() == "a", "and nothing is replaced")
+
+        # A model that does not load, and one that never comes up.
+        reply = chat(port, "will not load", "bad")
+        check(reply["status"] == 503 and reply["code"] == "model_load_failed", f"a model that does not load is refused ({reply['status']} {reply['code']})")
+        reply = chat(port, "after the failure", "a")
+        check(reply["status"] == 200 and reply["by"] == "a" and reply["done"] and server.loaded() == "a", "and the model before it is loaded again and answers")
+        check(server.said("the model bad did not load"), "the server reported the failure")
+        fourth = server.engine()
+        reply = chat(port, "never ready", "slow")
+        check(reply["status"] == 503 and reply["code"] == "model_load_failed" and reply["took"] > 2,
+              f"a model that is not ready in time is refused ({reply['status']} {reply['code']} after {reply['took']:.1f} s)")
+        reply = chat(port, "after the wait", "a")
+        check(reply["status"] == 200 and reply["by"] == "a" and server.loaded() == "a" and server.engine() not in (None, fourth),
+              "and the model before it is loaded again and answers")
+        check(server.said("not ready in"), "the server reported that too")
+
+        # A load by hand.
+        asked = cli("models", "--load", "c", "--port", str(port), "--config", server.config)
+        check(asked.returncode == 0 and "c is loaded" in asked.stdout and server.loaded() == "c", f"`splosh models --load` loads a model ({asked.stdout.strip()!r} {asked.stderr.strip()!r})")
+        asked = cli("models", "--load", "gone", "--port", str(port), "--config", server.config)
+        check(asked.returncode == 1 and "no artifact" in asked.stderr and server.loaded() == "c", "and says why it cannot load one")
+
+        # A load as the pages make it: JSON posted to the server's own address, from its own origin. It is answered
+        # when the model is loaded, and the list then has that model first and the rest as registered.
+        origin = f"http://127.0.0.1:{port}"
+        registered = ["a", "b", "c", "gone", "bad", "slow"]
+        started = time.time()
+        status, body, _ = post_load(port, "b", origin)
+        listed = models(port)
+        check(status == 200 and body == {"loaded": "b"} and listed["loaded"] == "b" and time.time() - started < 15,
+              f"a load posted from the server's own origin loads the model, and is answered once it is ({status} {body}, after {time.time() - started:.1f} s)")
+        check([model["id"] for model in listed["data"]] == ["b"] + [model for model in registered if model != "b"]
+              and listed["data"][0]["loaded"] and listed["data"][0]["state"] == "loaded" and not any(model["loaded"] for model in listed["data"][1:]),
+              f"and the list has it first, the others as registered ({[model['id'] for model in listed['data']]})")
+        check(listed["switch"]["target"] is None, "with no switch left in hand")
+        status, body, message = post_load(port, "a", "http://elsewhere.example")
+        check(status == 403 and message and "own settings page" in message and server.loaded() == "b", f"a load posted from another origin is refused ({status}: {message})")
+        status, body, message = post_load(port, "gone", origin)
+        check(status == 404 and message and "no artifact" in message and server.loaded() == "b", f"a model with no artifact is refused, with the message the page shows ({status}: {message})")
+        status, body, message = post_load(port, "bad", origin)
+        check(status == 503 and message and "did not load" in message, f"a model that does not load is refused, with the message the page shows ({status}: {message})")
+        status, body, message = post_load(port, "c", origin)
+        listed = models(port)
+        check(status == 200 and listed["loaded"] == "c" and [model["id"] for model in listed["data"]][:2] == ["c", "a"],
+              f"and a load after the failure loads, and takes the first place in the list ({status}; {[model['id'] for model in listed['data']]})")
+
+        # A restart, and an engine that dies, keep the model that was loaded (the config starts on a).
+        before = server.engine()
+        asked = cli("serve", "--restart", "--port", str(port), "--config", server.config)
+        deadline = time.time() + 20
+        while time.time() < deadline and server.engine() in (None, before):
+            time.sleep(0.1)
+        reply = chat(port, "after the restart", "qwen3.8-27b")
+        check(asked.returncode == 0 and server.engine() not in (None, before) and reply["status"] == 200 and reply["by"] == "c" and server.loaded() == "c",
+              f"a restart keeps the model that was loaded (answered by {reply['by']})")
+        doomed = server.engine()
+        os.kill(doomed, signal.SIGKILL)
+        deadline = time.time() + 20
+        while time.time() < deadline and server.engine() in (None, doomed):
+            time.sleep(0.1)
+        reply = chat(port, "after the crash", "qwen3.8-27b")
+        check(server.engine() not in (None, doomed) and reply["status"] == 200 and reply["by"] == "c", f"and so does an engine started in place of one that died (answered by {reply['by']})")
+
+        time.sleep(0.3)
+        polling[0] = False
+        time.sleep(0.2)
+        check(not refused and polls[0] > 100, f"nothing was refused ({polls[0]} connections throughout)")
+
+        server.process.send_signal(signal.SIGINT)
+        code = server.process.wait(20)
+        check(code == 0, f"a stop ends the server (exit {code})")
+    listed = cli("models", "--port", str(free_port()), "--config", server.config)
+    check(listed.returncode == 0 and "no server is answering" in listed.stdout and any(row.startswith("  b ") and "available" in row for row in listed.stdout.splitlines()),
+          "with no server on the port, `splosh models` lists what the config registers")
+
+
+def manual(directory):
+    """Manual mode: a request does not have a model loaded; a load by hand does."""
+    print("-- manual")
+    settings = ["modelSwitch = \"manual\"", "modelDwellSeconds = 30", f'weightsPath = "{os.path.join(directory, "c.splw")}"']
+    with Server(directory, "manual", settings, start="b") as server:
+        port = server.port
+        check(server.loaded() == "b", "`serve --model` starts on the model named, not the first registered")
+        check(server.said("weightsPath is not used"), "and says that weightsPath is not used when models are registered")
+        engine = server.engine()
+        reply = chat(port, "not this way", "a")
+        check(reply["status"] == 409 and reply["code"] == "model_not_loaded" and reply["by"] == "b", f"a request for another model is refused ({reply['status']} {reply['code']})")
+        check(server.engine() == engine and server.loaded() == "b", "and nothing is replaced")
+        shown = cli("models", "--port", str(port), "--config", server.config)
+        check("switching on request: off" in shown.stdout, "`splosh models` says that switching on request is off")
+        started = time.time()
+        asked = cli("models", "--load", "a", "--port", str(port), "--config", server.config)
+        check(asked.returncode == 0 and server.loaded() == "a" and time.time() - started < 10, "a load by hand loads it, without waiting for the loaded model's turn")
+        reply = chat(port, "this way", "a")
+        check(reply["status"] == 200 and reply["by"] == "a" and reply["done"], "and its requests are then answered")
+
+
+def turns(directory):
+    """A dwell: a model just loaded keeps its turn, and two clients of two models both get on."""
+    print("-- turns")
+    with Server(directory, "turns", ["modelDwellSeconds = 2", "switchWaitSeconds = 30"]) as server:
+        port = server.port
+        reply = chat(port, "first", "b")
+        check(reply["status"] == 200 and reply["by"] == "b", "a request for another model is answered by it")
+        results = {}
+        thread = later(0, results, "back", lambda: chat(port, "straight back", "a"))
+        time.sleep(0.8)
+        during = models(port)
+        check(during["loaded"] == "b" and during["switch"] == {"mode": "request", "target": "a", "phase": "dwell", "parked": 1},
+              f"a request for the model before it waits for the new one's turn to end ({during['switch']})")
+        thread.join(60)
+        back = results["back"]
+        check(back["status"] == 200 and back["by"] == "a" and 1.5 < back["took"] < 8, f"and is answered when it has ({back['status']}, by {back['by']}, after {back['took']:.1f} s)")
+
+        # Two clients, each of its own model: three requests each, a pause between one and the next.
+        replies = {"a": [], "b": []}
+        switched = sum("switched to" in line for line in server.log)
+
+        def client(model):
+            for index in range(3):
+                replies[model].append(chat(port, f"{model} request {index}", model, timeout=120))
+                time.sleep(1.5)
+
+        clients = [threading.Thread(target=client, args=(model,)) for model in ("a", "b")]
+        started = time.time()
+        for thread in clients:
+            thread.start()
+        for thread in clients:
+            thread.join(180)
+        took = time.time() - started
+        every = replies["a"] + replies["b"]
+        check(len(every) == 6 and all(reply["status"] == 200 and reply["done"] for reply in every),
+              f"two clients of two models both get all their replies, none refused ({[reply['status'] for reply in every]} in {took:.0f} s)")
+        check(all(reply["by"] == model for model in ("a", "b") for reply in replies[model]), "each from the model it asked for")
+        switched = sum("switched to" in line for line in server.log) - switched
+        longest = max(reply["took"] for reply in every)
+        check(switched >= 2 and longest < 15, f"with the models taking turns ({switched} switches; the longest wait {longest:.1f} s)")
+
+        # Two other models asked for at once: the one asked for first, then the other after its turn.
+        one, two = [model for model in ("a", "b", "c") if model != server.loaded()]
+        results = {}
+        threads = [later(0, results, "one", lambda: chat(port, "the first asked for", one)),
+                   later(0.3, results, "two", lambda: chat(port, "the second asked for", two))]
+        for thread in threads:
+            thread.join(60)
+        first, second = results["one"], results["two"]
+        check(first["status"] == 200 and first["by"] == one and second["status"] == 200 and second["by"] == two,
+              f"two other models asked for together are each loaded for their request ({first['status']} by {first['by']}, {second['status']} by {second['by']})")
+        check(second["ended"] - first["ended"] > 1.5, f"the second after the first has had its turn ({second['ended'] - first['ended']:.1f} s later)")
+
+
+def main():
+    if not os.path.exists(BINARY):
+        sys.exit(f"missing binary {BINARY}; build it, or give the path of one (tools/switch-smoke .build/debug/splosh)")
+    if cli("models", "--help").returncode != 0:
+        sys.exit(f"{BINARY} has no `models` command: it was built before models could be switched. "
+                 "Build it again, or give the path of a build that has (tools/switch-smoke .build/debug/splosh)")
+    directory = tempfile.mkdtemp(prefix="splosh-switch-")
+    try:
+        for model, size in SIZES.items():
+            with open(os.path.join(directory, model + ".splw"), "wb") as file:
+                file.write(b"\0" * size)
+        for case in (switching, manual, turns):
+            case(directory)
+            if failures:
+                sys.exit(1)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+    print("switch-smoke: all passed")
+
+
+if __name__ == "__main__":
+    main()

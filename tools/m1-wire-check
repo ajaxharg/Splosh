@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORT=8091
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG=$(mktemp /tmp/splosh-m1-server.XXXXXX.log)
+OUT=$(mktemp /tmp/splosh-m1-wire.XXXXXX.out)
+pid=""
+cleanup() {
+  set +e
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  # `swift run` is a launcher and may leave the executable child alive after the
+  # launcher is terminated. Reap any listener it spawned before declaring the
+  # port clean; never kill an unrelated process that was already present (the
+  # preflight check above rejects that case).
+  for _ in $(seq 1 10); do
+    listener_pids=$(lsof -t -nP -iTCP:${PORT} -sTCP:LISTEN 2>/dev/null || true)
+    [[ -z "$listener_pids" ]] && break
+    kill $listener_pids 2>/dev/null || true
+    sleep 0.1
+  done
+  if lsof -nP -iTCP:${PORT} -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "m1-wire-check: port ${PORT} remains bound" >&2
+    lsof -nP -iTCP:${PORT} -sTCP:LISTEN >&2
+    exit 1
+  fi
+  rm -f "$LOG" "$OUT"
+}
+trap cleanup EXIT
+
+if lsof -nP -iTCP:${PORT} -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "m1-wire-check: port ${PORT} already bound" >&2
+  exit 1
+fi
+
+cd "$ROOT"
+# Build once, then launch the executable directly so cleanup owns the actual
+# listener process rather than a `swift run` launcher with a detached child.
+swift build --disable-sandbox >/dev/null
+"$(swift build --disable-sandbox --show-bin-path)/splosh" serve --echo --port "$PORT" >"$LOG" 2>&1 &
+pid=$!
+ready=0
+for _ in $(seq 1 60); do
+  if curl -fsS --max-time 1 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then ready=1; break; fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "m1-wire-check: server exited before readiness" >&2
+    cat "$LOG" >&2
+    exit 1
+  fi
+  sleep 0.5
+done
+[[ "$ready" == 1 ]] || { echo "m1-wire-check: readiness timeout" >&2; cat "$LOG" >&2; exit 1; }
+
+curl -fsS -N --max-time 15 -H 'Content-Type: application/json' \
+  -d @Tests/Fixtures/m1_scripted_turn.json \
+  "http://127.0.0.1:${PORT}/v1/chat/completions" >"$OUT"
+
+python3 - "$OUT" <<'PY'
+import json, sys
+text = open(sys.argv[1], encoding='utf-8').read()
+frames = []
+for line in text.splitlines():
+    if not line.startswith('data: '):
+        continue
+    data = line[6:]
+    if data == '[DONE]':
+        continue
+    frames.append(json.loads(data))
+assert any(c.get('delta', {}).get('content') for f in frames for c in f.get('choices', [])), 'no non-empty delta.content'
+reasons = [c.get('finish_reason') for f in frames for c in f.get('choices', []) if c.get('finish_reason') is not None]
+assert len(reasons) == 1, f'expected exactly one finish_reason, got {reasons!r}'
+assert reasons[0] in {'stop', 'length', 'tool_calls', 'content_filter', 'function_call'}, f'illegal finish_reason: {reasons[0]!r}'
+assert text.count('data: [DONE]') == 1, f"expected exactly one [DONE], got {text.count('data: [DONE]')}"
+PY
+
+echo "m1-wire-check: PASS"

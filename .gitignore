@@ -1,0 +1,55 @@
+# Splosh workspace ignore rules (created by M0.1; this file is scoped to the Splosh workspace
+# and does not touch the enclosing repository's own ignore rules).
+
+# SwiftPM build products and the tool's caches.
+.build/
+.swiftpm/
+
+# Metal shader intermediates, and the linked library, which is a build product of `make shaders`.
+*.air
+Sources/SploshCore/Resources/default.metallib
+
+# Model inputs: the payloads are large and fetched, the provenance manifests and checksums are
+# committed. `inputs/*` ignores the payloads; the negations re-include the directory and the two
+# checksum files the plan commits.
+inputs/*
+!inputs/tokenizer/
+inputs/tokenizer/*
+!inputs/tokenizer/SHA256SUMS
+!inputs/SHA256SUMS
+
+# Converted weight artifacts (`convert --out`, default `$PWD/splosh-weights/`).
+artifacts/
+splosh-weights/
+
+# Durable cache directories.
+cache/
+
+# Local run logs and scratch output.
+runlogs/
+*.log
+
+# macOS.
+.DS_Store
+
+# Ephemeral probe workspaces (asset-consumer re-probes, etc.).
+.tmp-asset-consumer-probe/
+
+# Scratch and Python caches under audit: commit the records, drop the probe artifacts.
+audit/scratch/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# Claude Code session worktrees (each is its own checkout).
+.claude/worktrees/
+
+# Saved copies of other people's papers and source, kept locally for reference and not ours to
+# publish.
+.research/
+
+# Agent session transcripts and the extracts copied out of them: they hold other projects' source
+# verbatim and the harness's own prompts. Kept locally as the evidence the audit documents cite.
+audit/_raw/
+audit/_extracted/
+audit/_extract-group1-findings.md

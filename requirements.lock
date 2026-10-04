@@ -1,0 +1,7 @@
+# M0.10 immutable Python compatibility surface.
+# M1.7 resolves and installs these exact package pins in the project environment.
+python_version == "3.14.*"
+huggingface_hub==0.36.0
+tokenizers==0.22.1
+# Exact Transformers source revision required by the plan; M1.7 materialises it.
+transformers @ git+https://github.com/huggingface/transformers.git@3f4c2c6b6fbd8a3d6d4c5a4f2d1e0c9b8a7f6e5d

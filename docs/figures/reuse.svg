@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 308" width="960" role="img">
+<title>Nothing is evaluated twice</title>
+<desc>A conversation's prompt as one strip: the system prompt and tools, the earlier turns and the last reply are kept from earlier work, and only the new tool result is evaluated; conversations are saved to disk, and 91% of prompt tokens in a day of agent traffic had been seen before.</desc>
+<style>
+  .bg{fill:#ffffff;stroke:#d0d7de;stroke-width:1.5}
+  text{font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;fill:#1f2328}
+  .t{font-size:14px}
+  .ts{font-size:14px;fill:#59636e}
+  .tb{font-size:14px;font-weight:600}
+  .n{font-size:12px;fill:#59636e}
+  .h{font-size:16px;font-weight:600}
+  .big{font-size:40px;font-weight:600}
+  .ln{fill:none;stroke:#59636e;stroke-width:1.5}
+  .sep{fill:none;stroke:#d0d7de;stroke-width:1.5}
+  .al{fill:none;stroke:#bf8700;stroke-width:1.5}
+  .mk{fill:#59636e}
+  .box,.panel,.blue,.amber,.green,.grey,.violet{stroke-width:1.5}
+  .box{fill:#ffffff;stroke:#59636e}
+  .panel{fill:#f6f8fa;stroke:#d0d7de}
+  .blue{fill:#ddf4ff;stroke:#0969da}
+  .amber{fill:#fff1c2;stroke:#bf8700}
+  .green{fill:#dafbe1;stroke:#1a7f37}
+  .grey{fill:#eaeef2;stroke:#8c959f}
+  .violet{fill:#f1e8ff;stroke:#8250df}
+  .dash{stroke-dasharray:5 4}
+  @media (prefers-color-scheme: dark){
+    .bg{fill:#0d1117;stroke:#30363d}
+    text{fill:#e6edf3}
+    .ts,.n{fill:#9198a1}
+    .ln{stroke:#9198a1}
+    .sep{stroke:#30363d}
+    .al{stroke:#d29922}
+    .mk{fill:#9198a1}
+    .box{fill:#0d1117;stroke:#9198a1}
+    .panel{fill:#161b22;stroke:#30363d}
+    .blue{fill:#0c2d54;stroke:#58a6ff}
+    .amber{fill:#3b2a05;stroke:#d29922}
+    .green{fill:#0f2d1a;stroke:#3fb950}
+    .grey{fill:#21262d;stroke:#6e7681}
+    .violet{fill:#2b1b4d;stroke:#a371f7}
+  }
+</style>
+<rect class="bg" x="0.75" y="0.75" width="958.5" height="306.5" rx="10"/>
+
+<!-- legend -->
+<rect class="green" x="24" y="20" width="14" height="14" rx="3"/>
+<text class="ts" x="46" y="32">seen before, state kept</text>
+<rect class="blue" x="236" y="20" width="14" height="14" rx="3"/>
+<text class="ts" x="258" y="32">new, evaluated now</text>
+
+<!-- the prompt as one strip -->
+<path class="green" d="M30 50 H244 V114 H30 A6 6 0 0 1 24 108 V56 A6 6 0 0 1 30 50 Z"/>
+<text class="t" x="134" y="87" text-anchor="middle">system prompt and tools</text>
+<rect class="green" x="244" y="50" width="254" height="64"/>
+<text class="t" x="371" y="87" text-anchor="middle">earlier turns</text>
+<rect class="green" x="498" y="50" width="254" height="64"/>
+<text class="t" x="625" y="76" text-anchor="middle">the last reply, as the client</text>
+<text class="t" x="625" y="94" text-anchor="middle">sends it back</text>
+<path class="blue" d="M752 50 H930 A6 6 0 0 1 936 56 V108 A6 6 0 0 1 930 114 H752 Z"/>
+<text class="t" x="844" y="87" text-anchor="middle">the new tool result</text>
+
+<text class="n" x="32" y="136">its state is saved, so a new agent</text>
+<text class="n" x="32" y="150">with the same instructions starts here</text>
+<text class="n" x="256" y="136">state held in the conversation's slot</text>
+<text class="n" x="510" y="136">state saved where each reply opens, so a</text>
+<text class="n" x="510" y="150">reply sent back differently still</text>
+<text class="n" x="510" y="164">continues from there</text>
+<text class="n" x="764" y="136">the only part evaluated</text>
+
+<line class="sep" x1="24" y1="190" x2="936" y2="190"/>
+
+<!-- the disk -->
+<path class="amber" d="M24 226 V270 A30 9 0 0 0 84 270 V226"/>
+<path class="al" d="M24 248 A30 9 0 0 0 84 248"/>
+<ellipse class="amber" cx="54" cy="226" rx="30" ry="9"/>
+<text class="t" x="104" y="244">conversations are written to disk and read back</text>
+<text class="t" x="104" y="262">at about a second per 50K tokens</text>
+
+<!-- the headline number -->
+<line class="sep" x1="500" y1="212" x2="500" y2="280"/>
+<text class="big" x="528" y="264">91%</text>
+<text class="t" x="624" y="244">of prompt tokens in a day of agent traffic</text>
+<text class="t" x="624" y="262">had been seen before</text>
+</svg>
