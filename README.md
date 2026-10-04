@@ -9,6 +9,9 @@ result at a time. It is inspired by ideas in [Splash](https://github.com/incoai/
 It exists to be fast at two things: reading long prompts (prefill) and writing replies
 (decode). This page says how to run it, and then why it is as fast as it is.
 
+If it is useful to you, you can put something in
+[Andy's Tea Fund](https://buymeacoffee.com/andysteafund).
+
 ## What it does on an M5 Pro
 
 Measured 2026-10-03 on an M5 Pro (20-core GPU, 64 GB), High Power mode, against Splash 1.1.0
@@ -419,6 +422,11 @@ decoders in `Sources/Shaders/gguf_formats.h` are adapted from theirs (Apache-2.0
 Apache-2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). The Apache-2.0 and MIT work named
 under Credits keeps its own licence; its notices are in
 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+
+## Support
+
+If Splosh is useful to you, you can put something in
+[Andy's Tea Fund](https://buymeacoffee.com/andysteafund).
 
 ## See also
 
