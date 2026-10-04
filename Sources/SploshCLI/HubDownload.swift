@@ -191,7 +191,7 @@ private final class PartFile: @unchecked Sendable {
             // Some of it may have been written (a full disk): the file is put back to what was
             // hashed, so that what arrives next goes where it belongs.
             try? handle.truncate(atOffset: UInt64(bytes))
-            try? handle.seekToEnd()
+            _ = try? handle.seekToEnd()
             throw error
         }
         hasher.update(data: data)

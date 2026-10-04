@@ -100,6 +100,16 @@ enum ServeSupervisor {
         return Supervisor(listener: listener, tokens: tokens, config: config, model: model, setup: setup, openPage: openPage).run(after: predecessor)
     }
 
+    /// The path this program was started from. Not resolved to the file it names now: a
+    /// restart is to run whatever is at this path then.
+    static func executablePath() -> String {
+        var size: UInt32 = 0
+        _NSGetExecutablePath(nil, &size)
+        var buffer = [CChar](repeating: 0, count: Int(size) + 1)
+        _NSGetExecutablePath(&buffer, &size)
+        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
     /// Show the page of the server at `host` and `port` in the user's browser.
     static func showPage(host: String, port: Int) {
         // The address the server listens on, or this machine's own where it listens on all.
@@ -256,12 +266,7 @@ private final class Supervisor: @unchecked Sendable {
         // A directory only this user can reach, where the system provides one short enough for
         // a socket path.
         directory = NSTemporaryDirectory().utf8.count > 70 ? "/tmp/" : NSTemporaryDirectory()
-        var size: UInt32 = 0
-        _NSGetExecutablePath(nil, &size)
-        var buffer = [CChar](repeating: 0, count: Int(size) + 1)
-        _NSGetExecutablePath(&buffer, &size)
-        // Not resolved to the file it names now: a restart is to run whatever is at this path then.
-        executable = String(cString: buffer)
+        executable = ServeSupervisor.executablePath()
         pipe(&wake)
         for descriptor in wake { _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) }
     }

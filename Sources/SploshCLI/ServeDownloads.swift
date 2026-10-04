@@ -46,12 +46,8 @@ enum ServeDownloads {
 
     /// Start `splosh download <id>`, and return once it holds the install lock or has ended.
     private static func spawn(_ id: String, configPath: String, parent: pid_t) throws {
-        var size: UInt32 = 0
-        _NSGetExecutablePath(nil, &size)
-        var buffer = [CChar](repeating: 0, count: Int(size) + 1)
-        _NSGetExecutablePath(&buffer, &size)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: String(cString: buffer))
+        process.executableURL = URL(fileURLWithPath: ServeSupervisor.executablePath())
         process.arguments = ["download", id, "--config", configPath]
         var environment = ProcessInfo.processInfo.environment
         environment[parentVariable] = "\(parent)"

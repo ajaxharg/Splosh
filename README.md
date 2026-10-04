@@ -18,6 +18,12 @@ Running it gives you two things on one local port:
 It exists to be fast at two things: reading long prompts (prefill) and writing replies
 (decode). This page says how to get it running, and then why it is as fast as it is.
 
+<p align="center">
+  <a href="https://buymeacoffee.com/andysteafund"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20tea&amp;emoji=%F0%9F%8D%B5&amp;slug=andysteafund&amp;button_colour=FFDD00&amp;font_colour=000000&amp;font_family=Cookie&amp;outline_colour=000000&amp;coffee_colour=ffffff" alt="Buy me a tea"></a>
+  <br>
+  <sub>Splosh is free. If it runs well on your Mac, a tea keeps the work on it going.</sub>
+</p>
+
 ## Contents
 
 - [What it does on an M5 Pro](#what-it-does-on-an-m5-pro): the measured rates
@@ -30,9 +36,8 @@ It exists to be fast at two things: reading long prompts (prefill) and writing r
 - [Limits](#limits)
 - [Credits](#credits)
 - [Licence](#licence)
+- [Support](#support)
 - [See also](#see-also)
-
-[![Buy me a tea](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20tea&emoji=%F0%9F%8D%B5&slug=andysteafund&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://buymeacoffee.com/andysteafund)
 
 ## What it does on an M5 Pro
 
