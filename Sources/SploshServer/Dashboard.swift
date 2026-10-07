@@ -68,7 +68,12 @@ const $=id=>document.getElementById(id);
 const gb=b=>(b/1073741824).toFixed(2)+' GiB',mb=b=>b>=1073741824?gb(b):(b/1048576).toFixed(0)+' MiB';
 const n=x=>x.toLocaleString(),r=x=>x>=100?x.toFixed(0):x.toFixed(1);
 const rate=(tokens,seconds)=>seconds>0.05&&tokens>0?r(tokens/seconds):'–';
-const made=x=>[['thinking',x.thinkingTokens],['answer',x.answerTokens],['tool call',x.toolCallTokens]].filter(p=>p[1]>0).map(p=>`${p[0]} ${n(p[1])}`).join(' · ')||'–';
+const kinds=x=>[['thinking',x.thinkingTokens],['answer',x.answerTokens],['tool call',x.toolCallTokens]].filter(p=>p[1]>0);
+const made=x=>kinds(x).map(p=>`${p[0]} ${n(p[1])}`).join(' · ')||'–';
+// A session's state, said once: a generating session is named by what it is writing, in the one colour.
+const state=x=>`<span class="pill ${x.state}">${esc(x.state==='decode'&&x.producing||x.state)}</span>`;
+// What a generating session has written: the kinds are given only where they say more than the state does.
+const written=x=>{const k=kinds(x);return `${n(x.generatedTokens)} generated`+(k.length>1||k.length&&k[0][0]!==x.producing?` <span class="queued">${made(x)}</span>`:'')};
 const pct=(a,b)=>b>0?(a/b*100).toFixed(0)+'%':'–';
 const left=x=>{const v=x.recentPrefillTokensPerSecond||x.prefillTokensPerSecond,l=x.promptTokens-x.evaluatedTokens;if(x.state!=='prefill'||!(v>0)||l<=0)return'';const t=l/v;return ` <span class="queued">· about ${t<90?t.toFixed(0)+' s':t<5400?(t/60).toFixed(1)+' min':(t/3600).toFixed(1)+' h'} left</span>`};
 const ago=x=>x<90?x.toFixed(0)+'s ago':x<5400?(x/60).toFixed(0)+'m ago':(x/3600).toFixed(1)+'h ago';
@@ -92,9 +97,9 @@ function peek(id,conv,x,over,under){if(view&&view.large)return;aim(id,conv);keep
 function enlarge(){if(!view)return;keep();drop();view.large=true;win.style.left=win.style.top='';win.className='open large';shade.className='open';wtext.scrollTop=wtext.scrollHeight;refresh()}
 function headline(v,x){const who=`<b>#${v.id}</b>`+(v.conv>0&&v.large?` · conversation ${v.conv}`:'');
  if(!x)return `${who} · ended`+(v.conv>0?', waiting for the conversation’s next request':'');
- const now=x.state==='decode'?`${esc(x.producing||'starting')} · ${n(x.generatedTokens)} tokens · ${r(x.recentDecodeTokensPerSecond||0)} tok/s`
-  :x.state==='prefill'?`reading the prompt, ${n(x.evaluatedTokens)} of ${n(x.promptTokens)}`:'waiting';
- return `${who}${x.turn&&v.large?` turn ${x.turn}`:''} · <span class="pill ${x.state}">${x.state}</span> ${now}`+(v.shown&&v.shown!==x.id?` · showing turn ${v.turn}`:'')}
+ const now=x.state==='decode'?` ${n(x.generatedTokens)} tokens · ${r(x.recentDecodeTokensPerSecond||0)} tok/s`
+  :x.state==='prefill'?` ${n(x.evaluatedTokens)} of ${n(x.promptTokens)} tokens`:'';
+ return `${who}${x.turn&&v.large?` turn ${x.turn}`:''} · ${state(x)}${now}`+(v.shown&&v.shown!==x.id?` · showing turn ${v.turn}`:'')}
 // Text is added to what is there and never replaced, so a selection and the scroll position
 // hold. A tool call's arguments are JSON text: shown with its escapes undone, whole escapes only.
 const plain={n:'\n',t:'\t',r:'',b:'',f:''};
@@ -164,10 +169,9 @@ async function tick(){try{
  $('memused').textContent=gb(used);$('memtotal').textContent=`of ${gb(tot)} working set · ${(used/tot*100).toFixed(1)}% · KV pool ${m.kvPagesUsed}/${m.kvPagesTotal} pages (${(m.kvBytesPerToken/1024).toFixed(1)} KiB/token)`;
  $('membar').innerHTML=parts.map(p=>`<i style="width:${p[1]/tot*100}%;background:${p[2]}"></i>`).join('');
  $('memkey').innerHTML=parts.map(p=>`<span><b style="background:${p[2]}"></b>${p[0]} ${mb(p[1])}</span>`).join('');
- $('sessions').innerHTML=table(['#','Conversation','State','Producing','Model','Context','Progress','Prompt tok/s now','avg','Generating tok/s now','avg','Tok/step','Drafts accepted, last 5 s','avg','KV','State mem','Age'],
-  s.sessions.map(x=>[x.id,x.conversation?`${x.conversation} <span class="queued">turn ${x.turn}</span>`:'–',`<span class="pill ${x.state}">${x.state}</span>`,
-   x.state==='decode'?`${x.producing?`<span class="pill">${esc(x.producing)}</span> `:''}<span class="queued">${made(x)}</span>`:x.state==='prefill'?'<span class="queued">reading the prompt</span>':'<span class="queued">waiting</span>',esc(x.label),n(x.contextTokens),
-   x.state==='decode'?`${n(x.generatedTokens)} generated`:`<div class="mini"><i style="width:${x.promptTokens?x.evaluatedTokens/x.promptTokens*100:0}%"></i></div> ${n(x.evaluatedTokens)}/${n(x.promptTokens)}${x.cachedTokens?` (${n(x.cachedTokens)} cached)`:''}${left(x)}`,
+ $('sessions').innerHTML=table(['#','Conversation','State','Model','Context','Progress','Prompt tok/s now','avg','Generating tok/s now','avg','Tok/step','Drafts accepted, last 5 s','avg','KV','State mem','Age'],
+  s.sessions.map(x=>[x.id,x.conversation?`${x.conversation} <span class="queued">turn ${x.turn}</span>`:'–',state(x),esc(x.label),n(x.contextTokens),
+   x.state==='decode'?written(x):`<div class="mini"><i style="width:${x.promptTokens?x.evaluatedTokens/x.promptTokens*100:0}%"></i></div> ${n(x.evaluatedTokens)}/${n(x.promptTokens)}${x.cachedTokens?` (${n(x.cachedTokens)} cached)`:''}${left(x)}`,
    x.state==='prefill'?r(x.recentPrefillTokensPerSecond||0):'–',r(x.prefillTokensPerSecond),x.state==='decode'?r(x.recentDecodeTokensPerSecond||0):'–',r(x.decodeTokensPerSecond),x.state==='decode'&&s.speculative?x.tokensPerStep.toFixed(2):'–',pct(x.recentAcceptedTokens,x.recentDraftedTokens),pct(x.acceptedTokens,x.draftedTokens),mb(x.kvBytes),mb(x.stateBytes),x.ageSeconds.toFixed(1)+'s']),'No active sessions',
   i=>` data-s="${s.sessions[i].id}" data-c="${s.sessions[i].conversation||0}"`);
  stats=s;refresh();

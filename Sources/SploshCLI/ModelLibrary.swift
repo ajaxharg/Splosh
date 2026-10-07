@@ -87,6 +87,19 @@ struct ModelLibrary: Codable, Equatable, Sendable {
               artifact: "models/gguf/ud-\(quant.lowercased()).splw", artifactBytes: artifactBytes, bitsPerWeight: bits, memoryGiB: memoryGiB)
     }
 
+    /// Swift-1.5, ukisai's fine-tune of Qwen3.8-27B, in llama.cpp's own K-quants. Its tokenizer
+    /// and chat template are the base model's. The files hold the gated-delta layers' two small
+    /// projections in fp32, which the converter keeps in Q8_0. Only sq5 has been converted and run: for
+    /// the other two the bits a weight and the memory are worked out from the files' headers,
+    /// and `artifactBytes` is an estimate from what sq5 came to.
+    private static func swift(_ id: String, _ quant: String, bytes: Int, sha256: String, artifactBytes: Int, bits: Double, memoryGiB: Double,
+                              summary: String) -> Model {
+        Model(id: id, title: "Swift-1.5 \(quant)", summary: summary, kind: .gguf,
+              source: Source(repo: "ukisai/Swift-1.5-Qwen3.8-27B-GGUF", revision: "14bfe4b42be4a925d98816db830155f476c605e7", directory: "inputs/gguf",
+                             files: [File(name: "Swift-1.5-Qwen3.8-27B-\(quant).gguf", bytes: bytes, sha256: sha256)]),
+              artifact: "models/gguf/swift15-\(quant.lowercased()).splw", artifactBytes: artifactBytes, bitsPerWeight: bits, memoryGiB: memoryGiB)
+    }
+
     static let builtIn = ModelLibrary(
         defaultModel: "mq4",
         tokenizer: Source(repo: mlxRepo, revision: mlxRevision, directory: "inputs/tokenizer", files: [
@@ -119,6 +132,15 @@ struct ModelLibrary: Codable, Equatable, Sendable {
             gguf("uq6", "Q6_K_M", bytes: 23_088_409_504, sha256: "493301830a596b8ad56dc1329f80bbcb578c8e910da395feafdc9cd8263430bb",
                  artifactBytes: 22_891_686_784, bits: 6.76, memoryGiB: 21.2,
                  summary: "The closest to the full model here, and the largest. Decode slower again than uq5; not yet timed."),
+            swift("sq4", "Q4_K_M", bytes: 17_442_399_936, sha256: "2ebba0ff1e63c1ac3fadd4e83efcea189f47f33ec72c91877af94de6ebe30590",
+                  artifactBytes: 17_170_000_000, bits: 5.09, memoryGiB: 15.9,
+                  summary: "Swift-1.5, a fine-tune of Qwen3.8-27B, at 4 bits. The smallest of its files and the fastest to decode; not yet run or timed."),
+            swift("sq5", "Q5_K_M", bytes: 20_923_877_056, sha256: "4964843f816dafe77ce24a92c97f3bb094b218d752172710d9438af0e2562931",
+                  artifactBytes: 20_653_797_632, bits: 6.13, memoryGiB: 19.2,
+                  summary: "Swift-1.5 at 5 bits: closer to the fine-tune's full weights, a little heavier than uq5. Runs; not yet timed."),
+            swift("sq6", "Q6_K", bytes: 23_860_565_696, sha256: "cd2eb6597026ce4eb86100e830be24f01461f84b89d4708634c2ec3d43b67fa8",
+                  artifactBytes: 23_590_000_000, bits: 7.00, memoryGiB: 21.9,
+                  summary: "Swift-1.5 at 6 bits: the closest to the fine-tune's full weights, the largest and the slowest to decode. Not yet run or timed."),
         ])
 }
 

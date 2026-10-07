@@ -181,8 +181,8 @@ struct GgufTests {
         try inScratchDirectory { directory in
             #expect(throws: GgufError.badMagic) { try GgufFile(url: try write(SyntheticGguf(magic: "GGML").bytes, in: directory)) }
             #expect(throws: GgufError.unsupportedVersion(2)) { try GgufFile(url: try write(SyntheticGguf(version: 2).bytes, in: directory)) }
-            #expect(throws: GgufError.unsupportedType(tensor: "blk.0.ssm_alpha.weight", id: 2)) {
-                try GgufFile(url: try write(SyntheticGguf(matrixType: 2).bytes, in: directory))
+            #expect(throws: GgufError.unsupportedType(tensor: "blk.0.ssm_alpha.weight", id: 3)) {
+                try GgufFile(url: try write(SyntheticGguf(matrixType: 3).bytes, in: directory))
             }
             #expect { try GgufFile(url: try write(SyntheticGguf(matrixInner: 40).bytes, in: directory)) } throws: { error in
                 if case GgufError.malformedHeader = error { return true } else { return false }
@@ -217,7 +217,7 @@ struct GgufTests {
     @Test("Block geometry and ggml type ids")
     func geometry() {
         let expected: [(GgufTensorType, UInt32, Int, Int)] = [
-            (.f32, 0, 1, 4), (.f16, 1, 1, 2), (.q8_0, 8, 32, 34), (.q3K, 11, 256, 110), (.q4K, 12, 256, 144),
+            (.f32, 0, 1, 4), (.f16, 1, 1, 2), (.q4_0, 2, 32, 18), (.q8_0, 8, 32, 34), (.q3K, 11, 256, 110), (.q4K, 12, 256, 144),
             (.q5K, 13, 256, 176), (.q6K, 14, 256, 210), (.iq4NL, 20, 32, 18), (.iq3S, 21, 256, 110),
             (.iq4XS, 23, 256, 136), (.bf16, 30, 1, 2),
         ]
@@ -226,7 +226,8 @@ struct GgufTests {
             #expect(type.rawValue == id && GgufTensorType(rawValue: id) == type)
             #expect(type.blockElements == elements && type.blockBytes == bytes)
         }
-        #expect(GgufTensorType(rawValue: 2) == nil)
+        #expect(GgufTensorType(rawValue: 3) == nil)
+        #expect(GgufPlanes.geometry(of: .q4_0) == nil)
         #expect(GgufTensorType.iq4nlValues.count == 16 && GgufTensorType.iq4nlValues.sorted() == GgufTensorType.iq4nlValues)
         #expect(GgufTensorType.iq3sGrid.count == 512)
         // Every byte of every grid entry is an odd magnitude from 1 to 15.
@@ -243,6 +244,19 @@ struct GgufTests {
         #expect(wrong.isEmpty, "\(golden.type): \(wrong.count) of \(decoded.count) values differ, the first at \(wrong.first?.offset ?? -1)")
         // Whole blocks are decoded one after the other, each to its own slice.
         #expect(decode(golden.type, golden.bytes + golden.bytes) == decoded + decoded)
+    }
+
+    @Test("A Q4_0 block decodes to its scale times each code less 8, low nibbles first")
+    func q4_0() {
+        // Scale 0.5 in fp16; byte e holds code e in its low nibble and 15 - e in its high one.
+        var block: [UInt8] = [0x00, 0x38]
+        var expected = [Float](repeating: 0, count: 32)
+        for e in 0..<16 {
+            block.append(UInt8(e) | UInt8(15 - e) << 4)
+            expected[e] = 0.5 * Float(e - 8)
+            expected[16 + e] = 0.5 * Float(7 - e)
+        }
+        #expect(decode(.q4_0, block) == expected)
     }
 
     @Test("The float types decode to the value they hold")

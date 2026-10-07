@@ -58,7 +58,7 @@ private func scaleFields(of type: GgufTensorType) -> [(offset: Int, magnitude: F
     case .iq4NL: return [(0, 1e-3)]                 // d * [-127, 113]
     case .iq4XS: return [(0, 6e-5)]                 // d * [-32, 31] * [-127, 113]
     case .iq3S: return [(0, 4e-4)]                  // d * [1, 31] * [-15, 15]
-    case .f32, .f16, .bf16: return []
+    case .f32, .f16, .bf16, .q4_0: return []
     }
 }
 

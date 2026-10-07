@@ -57,7 +57,8 @@ public enum GgufPlanes {
         }
     }
 
-    /// The record sizes of a quantised type; nil for the float types, which have no plane form.
+    /// The record sizes of a quantised type; nil for the float types and for Q4_0, which have no
+    /// plane form (Q4_0 is read so that a file keeping its MTP block in it can be opened).
     public static func geometry(of type: GgufTensorType) -> Geometry? {
         switch type {
         case .q4K: return Geometry(plane0Bytes: 16, plane1Bytes: 0, metaBytes: 16, metaGroups: 8, kernelSuffix: "q4k")
@@ -68,7 +69,7 @@ public enum GgufPlanes {
         case .iq4NL: return Geometry(plane0Bytes: 16, plane1Bytes: 0, metaBytes: 2, metaGroups: 1, kernelSuffix: "iq4nl")
         case .iq4XS: return Geometry(plane0Bytes: 16, plane1Bytes: 0, metaBytes: 8, metaGroups: 8, kernelSuffix: "iq4xs")
         case .iq3S: return Geometry(plane0Bytes: 16, plane1Bytes: 0, metaBytes: 2, metaGroups: 8, kernelSuffix: "iq3s")
-        case .f32, .f16, .bf16: return nil
+        case .f32, .f16, .bf16, .q4_0: return nil
         }
     }
 
@@ -277,7 +278,7 @@ public enum GgufPlanes {
                 plane0.storeBytes(of: word.littleEndian, toByteOffset: 4 * c, as: UInt32.self)
             }
             if j == 0 { copyMeta(0..<2) }
-        case .f32, .f16, .bf16:
+        case .f32, .f16, .bf16, .q4_0:
             preconditionFailure("\(type) has no plane form")
         }
     }
@@ -367,7 +368,7 @@ public enum GgufPlanes {
             for e in 0..<32 { b[74 + 4 * j + e / 8] |= high[slot(of: e)] << UInt8(e % 8) }
             b[66 + j] = UInt8(ninth)
             if j == 0 { copyMeta(0..<2) }
-        case .f32, .f16, .bf16:
+        case .f32, .f16, .bf16, .q4_0:
             preconditionFailure("\(type) has no plane form")
         }
     }

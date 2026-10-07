@@ -33,7 +33,7 @@ public enum DownloadCommand {
         convert, register. With no model named it is the default, mq4 (the MLX 4-bit pack).
         A download that was stopped carries on from where it got to.
 
-          <model>           one of the names `--list` shows: mq4, uq4, uq5, uq6
+          <model>           one of the names `--list` shows: mq4, uq4, uq5, uq6, sq4, sq5, sq6
           --list            the models there are, which are installed, and the directories that
                             take files you have downloaded yourself
           --no-draft        leave out the draft model (speculative decoding needs it)

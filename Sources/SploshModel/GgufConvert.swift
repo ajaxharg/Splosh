@@ -126,13 +126,13 @@ public extension Converter {
             }
             switch source.role {
             case .weight(let rows, let inner, _):
-                let stored = storedRows(rows)
-                guard let sizes = GgufPlanes.sizes(of: source.tensor.type, rows: stored, inner: inner) else {
+                let stored = storedRows(rows), type = storedType(of: source.tensor.type)
+                guard let sizes = GgufPlanes.sizes(of: type, rows: stored, inner: inner) else {
                     throw ConverterError.invalidSource("tensor \(source.tensor.name): \(source.tensor.type) \(rows) x \(inner) has no plane form")
                 }
                 let base = String(source.name.dropLast(".weight".count))
                 add(source.name, .plane0, dtype: .u8, shape: [stored, sizes.plane0 / stored], bytes: sizes.plane0,
-                    logicalShape: [rows, inner], ggufType: source.tensor.type.rawValue)
+                    logicalShape: [rows, inner], ggufType: type.rawValue)
                 if sizes.plane1 > 0 { add(base + ".plane1", .plane1, dtype: .u8, shape: [stored, sizes.plane1 / stored], bytes: sizes.plane1) }
                 add(base + ".meta", .meta, dtype: .u8, shape: [stored, sizes.meta / stored], bytes: sizes.meta)
             case .dense(let shape, _, _, _):
@@ -226,6 +226,35 @@ public extension Converter {
                                     byteCount: payloadStart + header.payloadLength, header: header)
     }
 
+    /// The type a weight is kept in: its own, or Q8_0 for one the file holds in a float type.
+    /// llama.cpp's own quantiser leaves the gated-delta layers' two small projections in fp32,
+    /// and the kernels read a weight from planes only; Unsloth's files hold the same two in Q8_0.
+    internal static func storedType(of type: GgufTensorType) -> GgufTensorType {
+        [.f32, .f16, .bf16].contains(type) ? .q8_0 : type
+    }
+
+    /// Rows of a float type as Q8_0 blocks, as llama.cpp quantises them: a block's scale is its
+    /// largest magnitude over 127, each code the value over that scale, rounded half away from
+    /// zero, and the scale is kept in fp16.
+    static func q8_0Blocks(of tensor: GgufFile.Tensor, in file: GgufFile) -> [UInt8] {
+        var values = [Float](repeating: 0, count: tensor.elementCount)
+        values.withUnsafeMutableBufferPointer { GgufTensorType.decode(tensor.type, blocks: file.bytes(of: tensor), into: $0) }
+        let blocks = values.count / 32
+        var bytes = [UInt8](repeating: 0, count: blocks * 34)
+        for block in 0..<blocks {
+            var largest: Float = 0
+            for e in 0..<32 { largest = max(largest, abs(values[32 * block + e])) }
+            let scale = largest / 127, inverse: Float = scale > 0 ? 1 / scale : 0
+            let stored = Float16(scale).bitPattern
+            bytes[34 * block] = UInt8(stored & 0xFF); bytes[34 * block + 1] = UInt8(stored >> 8)
+            for e in 0..<32 {
+                let code = (values[32 * block + e] * inverse).rounded(.toNearestOrAwayFromZero)
+                bytes[34 * block + 2 + e] = UInt8(bitPattern: Int8(max(-128, min(127, code))))
+            }
+        }
+        return bytes
+    }
+
     /// The rows a weight's planes hold: its own, rounded up to whole tiles.
     internal static func storedRows(_ rows: Int) -> Int {
         (rows + GgufPlanes.tileRows - 1) / GgufPlanes.tileRows * GgufPlanes.tileRows
@@ -267,7 +296,7 @@ public extension Converter {
                 guard tensor.dims == [inner, rows] else {
                     throw ConverterError.invalidSource("tensor \(tensor.name) has dims \(tensor.dims); the model's \(base) is \(rows) x \(inner), dims [\(inner), \(rows)]")
                 }
-                guard GgufPlanes.sizes(of: tensor.type, rows: storedRows(rows), inner: inner) != nil else {
+                guard GgufPlanes.sizes(of: storedType(of: tensor.type), rows: storedRows(rows), inner: inner) != nil else {
                     throw ConverterError.invalidSource("tensor \(tensor.name) is \(tensor.type), a type with no plane form for a \(rows) x \(inner) weight")
                 }
             case .dense(let shape, _, _, _):
@@ -352,13 +381,15 @@ public extension Converter {
     /// either is needed, then repacked a tile a task.
     private static func ggufPlanes(of tensor: GgufFile.Tensor, in file: GgufFile, rows: Int, inner: Int,
                                    heads: HeadOrder?, valueHeads: Int) -> GgufPlanes.Planes {
-        let type = tensor.type, rowBytes = tensor.rowBytes, stored = storedRows(rows)
+        let type = storedType(of: tensor.type), stored = storedRows(rows)
+        let rowBytes = inner / type.blockElements * type.blockBytes
         guard let sizes = GgufPlanes.sizes(of: type, rows: stored, inner: inner) else {
             preconditionFailure("\(tensor.name): \(type) \(rows) x \(inner) has no plane form")
         }
-        let native = file.bytes(of: tensor)
+        // A weight the file holds in a float type is quantised first, and is its own copy.
+        let requantised = type == tensor.type ? [] : q8_0Blocks(of: tensor, in: file)
         var ordered: [UInt8] = []
-        if heads != nil || stored != rows {
+        func order(_ native: UnsafeRawBufferPointer) {
             ordered = [UInt8](repeating: 0, count: stored * rowBytes)
             ordered.withUnsafeMutableBytes { target in
                 for row in 0..<rows {
@@ -366,6 +397,11 @@ public extension Converter {
                     target.baseAddress!.advanced(by: to * rowBytes).copyMemory(from: native.baseAddress!.advanced(by: row * rowBytes), byteCount: rowBytes)
                 }
             }
+        }
+        if heads != nil || stored != rows {
+            if requantised.isEmpty { order(file.bytes(of: tensor)) } else { requantised.withUnsafeBytes(order) }
+        } else {
+            ordered = requantised
         }
         var plane0 = [UInt8](repeating: 0, count: sizes.plane0), plane1 = [UInt8](repeating: 0, count: sizes.plane1)
         var meta = [UInt8](repeating: 0, count: sizes.meta)
@@ -390,7 +426,7 @@ public extension Converter {
                 }
             }
         }
-        if ordered.isEmpty { repack(native) } else { ordered.withUnsafeBytes(repack) }
+        if ordered.isEmpty { repack(file.bytes(of: tensor)) } else { ordered.withUnsafeBytes(repack) }
         return GgufPlanes.Planes(plane0: plane0, plane1: plane1, meta: meta)
     }
 

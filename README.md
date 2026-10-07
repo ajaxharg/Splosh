@@ -1,7 +1,7 @@
 # Splosh
 
 A Swift and Metal inference engine for **Qwen3.8-27B** (the MLX 4-bit pack, or Unsloth's GGUF
-files at their own size) on Apple silicon, with an OpenAI-compatible server built for what
+files at their own size) and its fine-tune **Swift-1.5**, on Apple silicon, with an OpenAI-compatible server built for what
 agent harnesses actually send: several long conversations at once, each growing by a tool
 result at a time. It is inspired by ideas in [Splash](https://github.com/incoai/splash) and
 [Splish](https://github.com/publicExcess/splish).
@@ -31,7 +31,7 @@ How it is made is in [pages of its own](#how-it-is-made).
 - [Batches of agents](#batches-of-agents): several conversations answered in the same step
 - [Getting it running](#getting-it-running): from a Mac with nothing installed to a served model
 - [The server](#the-server): the API and the dashboard
-- [Models](#models): the four there are
+- [Models](#models): the four there are, and Swift-1.5
 - [How it is made](#how-it-is-made): the pages with the detail
 - [Limits](#limits)
 - [Credits](#credits)
@@ -248,6 +248,19 @@ top of this page were measured on. The Unsloth files buy accuracy with bytes: mo
 weight means more to read on every step, so decode slows roughly in proportion while prefill
 barely changes.
 
+**Swift-1.5**, ukisai's fine-tune of Qwen3.8-27B, is installed and served the same way, from
+the GGUF files of
+[`ukisai/Swift-1.5-Qwen3.8-27B-GGUF`](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-27B-GGUF):
+
+| Name | Weights | Download | In memory |
+|---|---|---|---|
+| `sq4` | Swift-1.5 `Q4_K_M` | 17.4 GB | 15.9 GiB |
+| `sq5` | Swift-1.5 `Q5_K_M` | 20.9 GB | 19.2 GiB |
+| `sq6` | Swift-1.5 `Q6_K` | 23.9 GB | 21.9 GiB |
+
+`sq5` is the one that has been run, under an agent harness; it has not been timed, and `sq4`
+and `sq6` have not been tried. More under [Models](docs/models.md#swift-15).
+
 What an install does, where the files are kept, using files you already have, changing between
 models and what has been measured of each is in [Models](docs/models.md).
 
@@ -269,14 +282,14 @@ The detail is in pages of its own:
 | Page | What is in it |
 |---|---|
 | [Why it is fast](docs/why-it-is-fast.md) | prefill, decode, many sessions at once, and what was tried and did not work |
-| [Models](docs/models.md) | the four models, installing one, where the files are kept, changing between them, what has been measured |
+| [Models](docs/models.md) | the four models and Swift-1.5, installing one, where the files are kept, changing between them, what has been measured |
 | [The server](docs/server.md) | the API, the three pages, stopping and restarting, every setting |
 | [Working on Splosh](docs/development.md) | where things are in the source, measuring a change, the tests |
 
 ## Limits
 
-One model, Qwen3.8-27B, in the four quantisations under [Models](#models), one loaded at a
-time. One class of machine. Text and tool calls only. It binds to the loopback address and has
+One model, Qwen3.8-27B, in the four quantisations under [Models](#models), and one fine-tune
+of it, Swift-1.5; one loaded at a time. One class of machine. Text and tool calls only. It binds to the loopback address and has
 no authentication, so it is a local server, not something to expose. It has run under real
 agent batches for days, not months.
 
@@ -289,7 +302,8 @@ them. The GGUF path does: decoding a block of weights into scratch memory before
 is how Splash and Splish run GGUF, and the layout of the re-ordered codes and the per-format
 decoders in `Sources/Shaders/gguf_formats.h` are adapted from theirs (Apache-2.0).
 
-- The GGUF files are [Unsloth's](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF). The formats,
+- The GGUF files are [Unsloth's](https://huggingface.co/unsloth/Qwen3.8-27B-GGUF), and for
+  Swift-1.5 [ukisai's](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-27B-GGUF). The formats,
   the arithmetic that makes a weight of a code and the two tables (`kvalues_iq4nl`,
   `iq3s_grid`) are [llama.cpp](https://github.com/ggml-org/llama.cpp)'s (MIT).
 

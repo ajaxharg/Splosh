@@ -94,7 +94,7 @@ private func scaleOffsets(of type: GgufTensorType) -> [Int] {
     case .q4K, .q5K: return [0, 2]
     case .q6K: return [208]
     case .q3K: return [108]
-    case .q8_0, .iq4NL, .iq4XS, .iq3S: return [0]
+    case .q4_0, .q8_0, .iq4NL, .iq4XS, .iq3S: return [0]
     case .f32, .f16, .bf16: return []
     }
 }
@@ -629,17 +629,45 @@ struct GgufConvertTests {
                 ("the wrong shape", "blk.0.ssm_dt.bias", SourceTensor("blk.0.ssm_dt.bias", [64], .f32, zeros(256))),
                 ("a weight of the wrong shape", "blk.3.attn_k.weight", SourceTensor("blk.3.attn_k.weight", [5120, 512], .q8_0, zeros(512 * 160 * 34))),
                 ("a dense tensor of a quantised type", "blk.0.attn_norm.weight", SourceTensor("blk.0.attn_norm.weight", [5120], .q8_0, zeros(160 * 34))),
-                ("a weight of a float type", "blk.0.ssm_alpha.weight", SourceTensor("blk.0.ssm_alpha.weight", [5120, 48], .f16, zeros(48 * 5120 * 2))),
                 ("an attention tensor in a gated-delta layer", "blk.0.attn_q_norm.weight", SourceTensor("blk.0.attn_q_norm.weight", [256], .f32, zeros(1024))),
                 ("a gated-delta tensor in an attention layer", "blk.3.ssm_norm.weight", SourceTensor("blk.3.ssm_norm.weight", [128], .f32, zeros(512))),
                 ("a block past the model's layers", "blk.64.attn_norm.weight", SourceTensor("blk.64.attn_norm.weight", [5120], .f32, zeros(20480))),
                 ("a decay that is not negative", "blk.0.ssm_a", SourceTensor("blk.0.ssm_a", [48], .f32, zeros(192))),
+                ("a weight of Q4_0, which is read only to be left out with an MTP block", "blk.0.ssm_alpha.weight", SourceTensor("blk.0.ssm_alpha.weight", [5120, 48], .q4_0, zeros(48 * 160 * 18))),
                 ("a type the reader does not know", "blk.0.ssm_beta.weight", SourceTensor("blk.0.ssm_beta.weight", [5120, 48], typeID: 99, zeros(64))),
             ]
             for item in cases {
                 let message = try refusal([norm, item.tensor])
                 #expect(message?.contains(item.name) == true, "\(item.what): \(message ?? "converted")")
             }
+            // A weight the file holds in fp32, as llama.cpp's own quantiser leaves the two small
+            // projections of a gated-delta layer, is kept in Q8_0: every value within half a
+            // step of its block's scale, and the little the scale's own rounding to fp16 adds.
+            var floats = [Float](repeating: 0, count: 48 * 5120)
+            for index in floats.indices {
+                let code: Int = (index * 7919) % 2001 - 1000, row: Int = 1 + index / 5120
+                floats[index] = Float(code) * 1e-4 * Float(row)
+            }
+            let alpha = SourceTensor("blk.0.ssm_alpha.weight", [5120, 48], .f32, floatBytes(floats))
+            #expect(try refusal([norm, alpha]) == nil)
+            let kept = try WeightFile(splwURL: output).gguf(Self.layer0 + "linear_attn.in_proj_a.weight")
+            #expect(kept.type == .q8_0 && kept.logicalShape == [48, 5120] && kept.storedRows == 128)
+            let held = try GgufFile(url: directory.appendingPathComponent("refused.gguf"))
+            let blocks = Converter.q8_0Blocks(of: try held.tensor(named: "blk.0.ssm_alpha.weight"), in: held)
+            #expect(blocks.count == 48 * 160 * 34)
+            var decoded = [Float](repeating: 0, count: floats.count)
+            blocks.withUnsafeBytes { raw in decoded.withUnsafeMutableBufferPointer { GgufTensorType.decode(.q8_0, blocks: raw, into: $0) } }
+            var beyond = 0
+            for block in 0..<floats.count / 32 {
+                let range = 32 * block ..< 32 * block + 32
+                var largest: Float = 0
+                for e in range { largest = max(largest, abs(floats[e])) }
+                let step: Float = largest / 127
+                for e in range where abs(decoded[e] - floats[e]) > 0.6 * step { beyond += 1 }
+            }
+            #expect(beyond == 0, "\(beyond) of \(floats.count) values are more than 0.6 of a step from the source")
+            try sentinel.write(to: output)
+
             // A filter that leaves the tensor out lets the rest convert; one that leaves
             // nothing does not.
             #expect(try refusal([norm, cases[0].tensor], include: { _ in false }) != nil)

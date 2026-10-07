@@ -13,6 +13,7 @@ import Foundation
 public enum GgufTensorType: UInt32, Sendable, CaseIterable {
     case f32 = 0
     case f16 = 1
+    case q4_0 = 2
     case q8_0 = 8
     case q3K = 11
     case q4K = 12
@@ -23,11 +24,11 @@ public enum GgufTensorType: UInt32, Sendable, CaseIterable {
     case iq4XS = 23
     case bf16 = 30
 
-    /// Elements in one block: 1 for the float types, 32 for Q8_0 and IQ4_NL, 256 for the rest.
+    /// Elements in one block: 1 for the float types, 32 for Q4_0, Q8_0 and IQ4_NL, 256 for the rest.
     public var blockElements: Int {
         switch self {
         case .f32, .f16, .bf16: return 1
-        case .q8_0, .iq4NL: return 32
+        case .q4_0, .q8_0, .iq4NL: return 32
         case .q3K, .q4K, .q5K, .q6K, .iq4XS, .iq3S: return 256
         }
     }
@@ -38,7 +39,7 @@ public enum GgufTensorType: UInt32, Sendable, CaseIterable {
         case .f32: return 4
         case .f16, .bf16: return 2
         case .q8_0: return 34
-        case .iq4NL: return 18
+        case .q4_0, .iq4NL: return 18
         case .q3K, .iq3S: return 110
         case .q4K: return 144
         case .q5K: return 176
@@ -144,6 +145,7 @@ public extension GgufTensorType {
             case .f32: values[0] = Float(bitPattern: UInt32(littleEndian: block.loadUnaligned(as: UInt32.self)))
             case .f16: values[0] = block.half(at: 0)
             case .bf16: values[0] = Float(bitPattern: UInt32(UInt16(littleEndian: block.loadUnaligned(as: UInt16.self))) << 16)
+            case .q4_0: decodeQ4_0(block, values)
             case .q8_0: decodeQ8_0(block, values)
             case .iq4NL: decodeIQ4NL(block, values)
             case .q4K: decodeQ45K(block, values, fifthBit: false)
@@ -153,6 +155,16 @@ public extension GgufTensorType {
             case .iq4XS: decodeIQ4XS(block, values)
             case .iq3S: decodeIQ3S(block, values)
             }
+        }
+    }
+
+    /// Q4_0: fp16 scale, then 16 bytes of two codes; the low nibbles are elements 0 to 15 and the
+    /// high nibbles 16 to 31. A code is a value from -8 to 7, stored with 8 added.
+    private static func decodeQ4_0(_ b: UnsafeRawBufferPointer, _ out: UnsafeMutableBufferPointer<Float>) {
+        let d = b.half(at: 0)
+        for e in 0..<16 {
+            out[e] = d * Float(Int(b[2 + e] & 15) - 8)
+            out[16 + e] = d * Float(Int(b[2 + e] >> 4) - 8)
         }
     }
 

@@ -1,9 +1,10 @@
 # Models
 
-The four models Splosh runs, how each is installed, where its files are kept and how the
+The four models Splosh runs and the fine-tune Swift-1.5, how each is installed, where its files are kept and how the
 server changes between them. Back to the [README](../README.md).
 
 - [The four](#the-four)
+- [Swift-1.5](#swift-15)
 - [Getting one](#getting-one)
 - [Where it is all kept](#where-it-is-all-kept)
 - [Files you already have](#files-you-already-have)
@@ -34,13 +35,41 @@ from every fourth layer (`tools/gguf_check.py <file.gguf> --reference mlx-q8`). 
 measure of the weights: it gives no credit for Unsloth's calibration, which spends its
 precision where the outputs are most sensitive.
 
+## Swift-1.5
+
+Swift-1.5 is ukisai's fine-tune of Qwen3.8-27B. Its tokenizer and chat template are the base
+model's, so it is served as the four are. The files are llama.cpp's own K-quants, from
+[`ukisai/Swift-1.5-Qwen3.8-27B-GGUF`](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-27B-GGUF):
+
+| Name | Weights | Download | In memory | Bits a weight |
+|---|---|---|---|---|
+| `sq4` | Swift-1.5 `Q4_K_M` | 17.4 GB | 15.9 GiB | 5.09 |
+| `sq5` | Swift-1.5 `Q5_K_M` | 20.9 GB | 19.2 GiB | 6.13 |
+| `sq6` | Swift-1.5 `Q6_K` | 23.9 GB | 21.9 GiB | 7.00 |
+
+`sq5` is the one that has been used: installed with `splosh download sq5` (the conversion took
+17 s and wrote 20.65 GB) and run under an agent harness on 2026-10-07. It has not been timed,
+and its output has not been compared with llama.cpp's. `sq4` and `sq6` have not been converted
+or run, and their sizes are worked out from the files' headers.
+
+These files hold the two small projections of each gated-delta layer in fp32, which the
+kernels cannot read as a weight: the converter keeps them in Q8_0, as Unsloth's files do, so
+those two are rounded where llama.cpp reads them whole. Each file is heavier than the Unsloth
+file of the same name, because more of its tensors are in Q8_0, so expect decode a little
+below `uq4`, `uq5` and `uq6`.
+
+Speculative decoding uses the same draft model as the four. It was trained beside the base
+model, so it is right about a fine-tune less often: in the first hour of use about 30% of the
+tokens it drafted were kept, a small sample with no figure for the base model on the same
+prompts to hold it against. The MTP block the files carry is not used.
+
 ## Getting one
 
 All of these start the same install, and each shows its steps and progress:
 
 | From | How |
 |---|---|
-| The server's first page | with no model installed, `http://127.0.0.1:8091/` lists the four: press Download |
+| The server's first page | with no model installed, `http://127.0.0.1:8091/` lists them: press Download |
 | The server's terminal | on that first launch, Enter installs the default; a model's name and Enter, that one |
 | The models page | `http://127.0.0.1:8091/models`, under "Download models", at any time: another model can be added while one is serving |
 | A shell | `.build/release/splosh download uq5`; with no name, the default |
@@ -147,8 +176,9 @@ The settings named here are in the table under [Settings](server.md#settings).
   `uq6` have not been timed.
 
 The GGUF formats understood are Q4_K, Q5_K, Q6_K, Q3_K, Q8_0, IQ4_NL, IQ4_XS and IQ3_S, which
-is everything in the three files above; a file holding any other is refused, with the tensor
-named. The MTP block these files carry is not used.
+is everything in the Unsloth files and the Swift-1.5 ones; a file holding any other is refused,
+with the tensor named. The MTP block these files carry is not used (Swift-1.5's is in Q4_0,
+which is read only so that it can be left out).
 
 How a GGUF weight reaches the multiplier is under
 [Prefill](why-it-is-fast.md#prefill).
